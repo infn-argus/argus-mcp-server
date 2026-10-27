@@ -6,6 +6,11 @@ on:
     tags: ["v*.*.*"]
   pull_request:
     branches: [main]
+  # Rebuild and republish by hand, e.g. after the repository moved
+  # (infn-epics -> infn-argus, 2026-10-27): IMAGE_NAME follows
+  # github.repository, so the first build after a move is what creates the
+  # image under the new owner.
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
