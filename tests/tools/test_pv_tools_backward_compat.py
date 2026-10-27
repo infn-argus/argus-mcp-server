@@ -119,5 +119,8 @@ async def test_tool_count_is_within_high_level_target_band():
     # filtered list). +2 more (29): create_saverestore_configuration and
     # take_saverestore_snapshot - save-and-restore went from read-only to
     # creating, and a configuration (which PVs) and a snapshot (their values
-    # now) are distinct operations on distinct nodes.
-    assert 15 <= len(registry.list_tools()) <= 29
+    # now) are distinct operations on distinct nodes. +1 more (30):
+    # restore_saverestore_snapshot - writing a snapshot back to the machine,
+    # kept apart from the creating tools because it is the one write that is
+    # confirmed for every client.
+    assert 15 <= len(registry.list_tools()) <= 30

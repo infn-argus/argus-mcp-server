@@ -14,8 +14,10 @@ from argus.services.history_service import HistoryService
 
 WRITE_TOOLS = {
     "set_pv", "set_pv_value", "restart_ioc", "execute_procedure", "create_logbook_entry", "update_logbook_entry",
-    "create_saverestore_configuration", "take_saverestore_snapshot",
+    "create_saverestore_configuration", "take_saverestore_snapshot", "restore_saverestore_snapshot",
 }
+# Confirmed for every client, header or not: restoring writes the whole machine.
+ALWAYS_CONFIRMED = {"restore_saverestore_snapshot"}
 
 
 def _with_olog(app_context: AppContext) -> AppContext:
@@ -33,7 +35,7 @@ def test_only_write_tools_gain_confirmation_and_only_for_confirming_clients():
     plain = {t.name: t for t in registry.list_tools()}
     confirming = {t.name: t for t in registry.list_tools(confirm_writes=True)}
 
-    assert all("confirmation_id" not in t.inputSchema["properties"] for t in plain.values())
+    assert {n for n, t in plain.items() if "confirmation_id" in t.inputSchema["properties"]} == ALWAYS_CONFIRMED
     with_confirmation = {n for n, t in confirming.items() if "confirmation_id" in t.inputSchema["properties"]}
     assert with_confirmation == WRITE_TOOLS
     assert "two steps" in confirming["create_logbook_entry"].description

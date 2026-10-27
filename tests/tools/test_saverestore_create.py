@@ -175,3 +175,94 @@ async def test_a_snapshot_of_a_configuration_by_path_is_read_by_the_service_then
     assert saved.calls.last.request.url.params["parentNodeId"] == CONFIG
     assert body["snapshotNode"]["nodeType"] == "SNAPSHOT" and body["snapshotData"]["snapshotItems"] == items
     assert saved.calls.last.request.headers["authorization"] == "Bearer eyJuser"
+
+
+# --- listing snapshots and restoring -----------------------------------------
+
+SNAP_OLD = "55555555-5555-5555-5555-555555555555"
+SNAP_NEW = "66666666-6666-6666-6666-666666666666"
+
+
+def _mock_snapshots() -> None:
+    _mock_tree()
+    respx.get(f"{SAR}/node/{CONFIG}/children").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {**_node(SNAP_OLD, "monday", "SNAPSHOT", "asmith"), "created": 1792800000000, "description": "before"},
+                {**_node(SNAP_NEW, "tuesday", "SNAPSHOT", "jdoe"), "created": 1792900000000, "description": "after ramp"},
+            ],
+        )
+    )
+
+
+@respx.mock
+async def test_a_configurations_snapshots_are_listed_newest_first(app_context: AppContext):
+    _mock_snapshots()
+    payload = json.loads((await build_registry().dispatch(
+        "search_snapshots", {"configuration": "BTF_CONF/Quadrupoles"}, _ctx(app_context)
+    ))[0].text)
+    assert payload["configuration"]["path"] == "/BTF_CONF/Quadrupoles"
+    assert [s["name"] for s in payload["snapshots"]] == ["tuesday", "monday"]
+    assert payload["snapshots"][0]["owner"] == "jdoe" and payload["snapshots"][0]["comment"] == "after ramp"
+
+
+@respx.mock
+async def test_snapshots_resolve_by_name_or_latest_and_a_wrong_name_lists_them():
+    _mock_snapshots()
+    service = _service()
+    assert (await service.resolve_snapshot("latest", "BTF_CONF/Quadrupoles"))[0].unique_id == SNAP_NEW
+    assert (await service.resolve_snapshot("MONDAY", "BTF_CONF/Quadrupoles"))[0].unique_id == SNAP_OLD
+    with pytest.raises(SaveRestoreQueryError, match="newest first: tuesday, monday"):
+        await service.resolve_snapshot("friday", "BTF_CONF/Quadrupoles")
+
+
+@respx.mock
+async def test_restore_is_confirmed_even_without_the_header_and_previews_what_would_change(app_context: AppContext):
+    _mock_snapshots()
+    respx.get(f"{SAR}/compare/{SNAP_NEW}").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"pvName": "A:SP", "equal": False, "storedValue": {"value": 4.2}, "liveValue": {"value": 5.0}, "delta": "-0.8"},
+                {"pvName": "B:SP", "equal": True, "storedValue": {"value": 1}, "liveValue": {"value": 1}},
+            ],
+        )
+    )
+    restored = respx.post(f"{SAR}/restore/node").mock(
+        return_value=httpx.Response(
+            200, json=[{"snapshotItem": {"configPv": {"pvName": "A:SP"}}, "errorMsg": "Failed to write to PV 'A:SP'"}]
+        )
+    )
+    ctx, registry = _ctx(app_context), build_registry()
+    args = {"snapshot": "latest", "configuration": "BTF_CONF/Quadrupoles"}
+    with caller_token_scope("eyJuser"):  # no confirm_writes_scope: restore asks anyway
+        first = json.loads((await registry.dispatch("restore_saverestore_snapshot", dict(args), ctx))[0].text)
+        assert first["status"] == "confirmation_required" and not restored.called
+        assert "RESTORE the snapshot /BTF_CONF/Quadrupoles / tuesday" in first["action"]
+        assert "1 setpoint PV(s) WOULD CHANGE (live -> saved): A:SP: 5.0 -> 4.2 (delta -0.8)" in first["action"]
+        assert "1 already match" in first["action"]
+        done = json.loads((await registry.dispatch(
+            "restore_saverestore_snapshot", {**args, "confirmation_id": first["confirmation_id"]}, ctx
+        ))[0].text)
+
+    assert restored.calls.last.request.url.params["nodeId"] == SNAP_NEW
+    assert restored.calls.last.request.headers["authorization"] == "Bearer eyJuser"
+    assert done["status"] == "success" and done["pvs_written"] == 1
+    assert done["failed"] == [{"pv_name": "A:SP", "error": "Failed to write to PV 'A:SP'"}]
+    assert "1 PV(s) FAILED: A:SP" in done["logbook_suggestion"]["text"]
+    assert "ASK whether to record it in the logbook" in done["next_step"]
+
+
+@respx.mock
+async def test_restoring_a_snapshot_that_matches_the_machine_says_nothing_would_change(app_context: AppContext):
+    _mock_snapshots()
+    respx.get(f"{SAR}/node/{SNAP_OLD}").mock(return_value=httpx.Response(200, json=_node(SNAP_OLD, "monday", "SNAPSHOT")))
+    respx.get(f"{SAR}/compare/{SNAP_OLD}").mock(
+        return_value=httpx.Response(200, json=[{"pvName": "A:SP", "equal": True, "storedValue": {"value": 1}, "liveValue": {"value": 1}}])
+    )
+    first = json.loads((await build_registry().dispatch(
+        "restore_saverestore_snapshot", {"snapshot": SNAP_OLD}, _ctx(app_context)
+    ))[0].text)
+    assert first["status"] == "confirmation_required"
+    assert "all 1 PV(s) already match the snapshot, so no value would change" in first["action"]

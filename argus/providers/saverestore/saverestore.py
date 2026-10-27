@@ -23,8 +23,15 @@ LibreChat and Olog) and records as the node's owner:
 The one-call PUT /take-snapshot/<config> is deliberately not used: it skips
 the service's authorization check and records no owner.
 
-Restoring a snapshot is still left out: it writes potentially dozens of PVs
-back across the machine - the highest-blast-radius write ARGUS could have.
+Restoring, as the signed-in user - the highest-blast-radius write ARGUS has,
+so the tool confirms it for every client (registry: always_confirm) and
+previews it with the service's own comparison:
+
+    GET  /compare/<snapshot>?skipReadback=true -> [ComparisonResult]  (saved vs live)
+    POST /restore/node?nodeId=<snapshot>       -> [RestoreResult]     (failures only)
+
+The service does the writing: only each item's setpoint, never its readback,
+and read-only items are skipped (SnapshotUtil.cleanSnapshotItems).
 """
 
 from __future__ import annotations
@@ -230,6 +237,50 @@ class SaveRestoreProvider:
             raise SaveRestoreQueryError(f"Unexpected save-and-restore snapshot response shape: {exc}") from exc
         return node, [_to_snapshot_value(item) for item in items]
 
+
+    async def compare(self, snapshot_id: str, *, timeout: float = 30.0) -> list[dict[str, Any]]:
+        """Each restorable PV's saved value against its live one (the service reads the PVs)."""
+        self._require_configured()
+        results = await self._request(
+            "GET", f"/compare/{snapshot_id}", params={"skipReadback": "true"}, timeout=timeout
+        )
+        if not isinstance(results, list):
+            raise SaveRestoreQueryError("Unexpected compare response shape.")
+        return [
+            {
+                "pv_name": r.get("pvName", ""),
+                "equal": bool(r.get("equal")),
+                "saved": _vtype_value(r.get("storedValue")),
+                "live": _vtype_value(r.get("liveValue")),
+                "delta": r.get("delta") or None,
+            }
+            for r in results
+            if isinstance(r, dict)
+        ]
+
+    async def restore(self, snapshot_id: str, *, timeout: float = 60.0) -> list[dict[str, str]]:
+        """Write the snapshot's setpoints back, as the caller. Returns the PVs that failed (empty: all written)."""
+        self._require_configured()
+        failures = await self._request(
+            "POST", "/restore/node", params={"nodeId": snapshot_id}, timeout=timeout
+        )
+        if not isinstance(failures, list):
+            raise SaveRestoreQueryError("Unexpected restore response shape.")
+        return [
+            {
+                "pv_name": ((f.get("snapshotItem") or {}).get("configPv") or {}).get("pvName", ""),
+                "error": f.get("errorMsg") or "unknown error",
+            }
+            for f in failures
+            if isinstance(f, dict)
+        ]
+
+
+def _vtype_value(vtype: Any) -> Any:
+    """The plain value inside a Phoebus VType as JSON ({"type":..., "value": 4.2, "alarm": ...})."""
+    if isinstance(vtype, dict):
+        return vtype.get("value")
+    return vtype
 
 def _refusal(exc: httpx.HTTPStatusError, method: str, path: str) -> SaveRestoreRefusedError:
     try:

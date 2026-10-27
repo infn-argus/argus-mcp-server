@@ -14,7 +14,12 @@ reported as skipped, never silently dropped; explicit PVs cover those.
 A snapshot always belongs to an existing configuration: the service itself
 reads the configuration's PVs and ARGUS saves the result.
 
-Both report what was done in a form ready for the logbook
+Restoring writes a snapshot's setpoints back to the machine (the service
+does the writing; readbacks and read-only PVs are never written). Its
+preview is the service's own comparison: which PVs would change, from what
+to what.
+
+All three report what was done in a form ready for the logbook
 (logbook_suggestion) - the tool asks the user whether to log it.
 """
 
@@ -159,7 +164,7 @@ class SaveRestoreService:
     async def resolve_configuration(self, configuration: str) -> tuple[SnrNode, str]:
         """A configuration given by node id or by path ("BTF_CONF/Magnets/Quads")."""
         text = (configuration or "").strip()
-        if len(text) == 36 and text.count("-") == 4 and "/" not in text:
+        if _is_uuid(text):
             node = await self._saverestore.get_node(text)
             if node.node_type != "CONFIGURATION":
                 raise SaveRestoreQueryError(f"{text} is a {node.node_type}, not a configuration.")
@@ -201,6 +206,87 @@ class SaveRestoreService:
             },
         }
 
+
+    # --- snapshots of a configuration, and restoring one -----------------
+
+    async def list_snapshots(self, configuration: str) -> tuple[SnrNode, str, list[SnrNode]]:
+        """A configuration's snapshots, newest first."""
+        config, path = await self.resolve_configuration(configuration)
+        children = await self._saverestore.get_children(config.unique_id)
+        snapshots = [c for c in children if c.node_type in ("SNAPSHOT", "COMPOSITE_SNAPSHOT")]
+        epoch = datetime.min.replace(tzinfo=timezone.utc)
+        snapshots.sort(key=lambda n: _aware(n.created) or epoch, reverse=True)
+        return config, path, snapshots
+
+    async def resolve_snapshot(self, snapshot: str, configuration: str = "") -> tuple[SnrNode, str]:
+        """(snapshot node, "<configuration path> / <snapshot name>") from an id, or a name or
+        "latest" within a configuration."""
+        text = (snapshot or "").strip()
+        if _is_uuid(text):
+            node = await self._saverestore.get_node(text)
+            if node.node_type not in ("SNAPSHOT", "COMPOSITE_SNAPSHOT"):
+                raise SaveRestoreQueryError(f"{text} is a {node.node_type}, not a snapshot.")
+            return node, node.name
+        if not configuration:
+            raise ValidationError(
+                "Give the snapshot's id, or its configuration (path or id) with the snapshot's name or 'latest'."
+            )
+        _, path, snapshots = await self.list_snapshots(configuration)
+        if not snapshots:
+            raise SaveRestoreQueryError(f"The configuration {path} has no snapshots.")
+        if text.lower() in ("", "latest", "last", "newest"):
+            return snapshots[0], f"{path} / {snapshots[0].name}"
+        node = next((n for n in snapshots if n.name == text), None) or next(
+            (n for n in snapshots if n.name.lower() == text.lower()), None
+        )
+        if node is None:
+            names = ", ".join(n.name for n in snapshots[:15])
+            raise SaveRestoreQueryError(f"No snapshot {text!r} of {path}. Its snapshots, newest first: {names}.")
+        return node, f"{path} / {node.name}"
+
+    async def restore_preview(self, snapshot: str, configuration: str = "") -> dict[str, Any]:
+        node, label = await self.resolve_snapshot(snapshot, configuration)
+        compared = await self._saverestore.compare(node.unique_id)
+        changes = [c for c in compared if not c["equal"]]
+        return {"snapshot": node, "label": label, "changes": changes, "unchanged": len(compared) - len(changes)}
+
+    async def restore(self, snapshot: str, configuration: str = "") -> dict[str, Any]:
+        preview = await self.restore_preview(snapshot, configuration)
+        node, label = preview["snapshot"], preview["label"]
+        failures = await self._saverestore.restore(node.unique_id)
+        written = len(preview["changes"]) + preview["unchanged"] - len(failures)
+        changed = ", ".join(f"{c['pv_name']} {c['live']} -> {c['saved']}" for c in preview["changes"][:15])
+        return {
+            "snapshot": {"unique_id": node.unique_id, "name": node.name, "label": label},
+            "pvs_written": max(written, 0),
+            "changed_before_restore": preview["changes"],
+            "failed": failures,
+            "logbook_suggestion": {
+                "title": f"Save-and-restore: restored snapshot {node.name}",
+                "text": (
+                    f"Restored the save-and-restore snapshot {label} (id {node.unique_id}): "
+                    f"{max(written, 0)} setpoint PV(s) written"
+                    + (f"; changed from live values: {changed}" if changed else "; no PV differed from the snapshot")
+                    + (
+                        f". {len(failures)} PV(s) FAILED: "
+                        + ", ".join(f"{f['pv_name']} ({f['error']})" for f in failures[:10])
+                        if failures
+                        else ""
+                    )
+                    + "."
+                ),
+            },
+        }
+
+
+def _is_uuid(text: str) -> bool:
+    return len(text) == 36 and text.count("-") == 4 and "/" not in text
+
+
+def _aware(when: datetime | None) -> datetime | None:
+    if when is None:
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 def _describe_devices(plan: ConfigurationPlan) -> str:
     return "Created by ARGUS for: " + ", ".join(plan.devices)

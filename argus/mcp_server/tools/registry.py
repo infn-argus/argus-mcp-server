@@ -55,9 +55,16 @@ class ToolDefinition:
     # (e.g. the PVs a configuration will get) - and an ArgusError it raises
     # stops the call before any confirmation is asked for.
     describe: Callable[..., str | Awaitable[str]] | None = None
+    # Confirm in two steps for EVERY client, not only those asking for it -
+    # for writes whose blast radius is the whole machine (restoring a
+    # snapshot), where a client without its own gate must not get one-shot.
+    always_confirm: bool = False
+
+    def needs_confirmation(self, client_confirms_writes: bool) -> bool:
+        return self.writes and (client_confirms_writes or self.always_confirm)
 
     def as_mcp_tool(self, confirm_writes: bool = False) -> Tool:
-        if not (self.writes and confirm_writes):
+        if not self.needs_confirmation(confirm_writes):
             return Tool(name=self.name, description=self.description, inputSchema=self.input_schema)
         schema = dict(self.input_schema)
         schema["properties"] = {**schema.get("properties", {}), CONFIRMATION_ARG: _CONFIRM_PROPERTY}
@@ -105,7 +112,7 @@ class ToolRegistry:
         with request_scope(extra=correlation):
             structlog.contextvars.bind_contextvars(tool=name)
             try:
-                if tool.writes and writes_need_confirmation():
+                if tool.needs_confirmation(writes_need_confirmation()):
                     gate = await self._confirmation_gate(tool, arguments, ctx, correlation)
                     if gate is not None:
                         return [gate]

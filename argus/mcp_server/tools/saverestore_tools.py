@@ -33,6 +33,11 @@ _SEARCH_SNAPSHOTS_SCHEMA = {
             "type": "string",
             "description": "A folder node's uniqueId (from a previous search_snapshots call) to list its direct children instead of searching.",
         },
+        "configuration": {
+            "type": "string",
+            "description": "A configuration's path (e.g. 'BTF_CONF/Quadrupoles') or uniqueId: list its snapshots, "
+            "newest first, with when, who and the comment - 'which snapshots are there of X'.",
+        },
     },
 }
 
@@ -49,6 +54,25 @@ _GET_SNAPSHOT_SCHEMA = {
 
 
 async def _search_snapshots(arguments: dict[str, Any], ctx: AppContext) -> dict[str, Any]:
+    configuration = arguments.get("configuration")
+    if configuration:
+        config, path, snapshots = await ctx.saverestore_service.list_snapshots(str(configuration))
+        return {
+            "configuration": {"unique_id": config.unique_id, "path": path},
+            "snapshot_count": len(snapshots),
+            "snapshots": [
+                {
+                    "unique_id": n.unique_id,
+                    "name": n.name,
+                    "created": n.created,
+                    "owner": n.user_name,
+                    "comment": n.description,
+                    "node_type": n.node_type,
+                }
+                for n in snapshots
+            ],
+        }
+
     node_id = arguments.get("node_id")
     if node_id:
         nodes = await ctx.saverestore_service.get_children(node_id)
@@ -56,7 +80,9 @@ async def _search_snapshots(arguments: dict[str, Any], ctx: AppContext) -> dict[
 
     query = arguments.get("query")
     if not query or not isinstance(query, str):
-        raise ValidationError("Provide either query (to search) or node_id (to list a folder's children).")
+        raise ValidationError(
+            "Provide query (to search), node_id (to list a folder's children) or configuration (to list its snapshots)."
+        )
     nodes = await ctx.saverestore_service.search(query)
     return {"nodes": [dataclasses.asdict(n) for n in nodes]}
 
@@ -184,6 +210,52 @@ async def _describe_take_snapshot(arguments: dict[str, Any], ctx: AppContext) ->
     )
 
 
+_RESTORE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "snapshot": {
+            "type": "string",
+            "description": "The snapshot to restore: its uniqueId, or - together with configuration - its name, "
+            "or 'latest' for the configuration's newest snapshot.",
+        },
+        "configuration": {
+            "type": "string",
+            "description": "The snapshot's configuration (path such as 'BTF_CONF/Quadrupoles', or uniqueId), when "
+            "snapshot is a name or 'latest'.",
+        },
+    },
+    "required": ["snapshot"],
+}
+
+
+async def _describe_restore(arguments: dict[str, Any], ctx: AppContext) -> str:
+    preview = await ctx.saverestore_service.restore_preview(
+        str(arguments.get("snapshot") or ""), str(arguments.get("configuration") or "")
+    )
+    node, changes = preview["snapshot"], preview["changes"]
+    when = f" (taken {node.created:%Y-%m-%d %H:%M} by {node.user_name or 'unknown'})" if node.created else ""
+    head = f"RESTORE the snapshot {preview['label']}{when} to the LIVE machine, under your name: "
+    if not changes:
+        return head + f"all {preview['unchanged']} PV(s) already match the snapshot, so no value would change."
+    shown = "; ".join(
+        f"{c['pv_name']}: {c['live']} -> {c['saved']}" + (f" (delta {c['delta']})" if c.get("delta") else "")
+        for c in changes[:40]
+    )
+    more = f" ...and {len(changes) - 40} more" if len(changes) > 40 else ""
+    return (
+        head + f"{len(changes)} setpoint PV(s) WOULD CHANGE (live -> saved): {shown}{more}. "
+        f"{preview['unchanged']} already match. Readbacks and read-only PVs are not written."
+    )
+
+
+async def _restore_saverestore_snapshot(arguments: dict[str, Any], ctx: AppContext) -> dict[str, Any]:
+    snapshot = arguments.get("snapshot")
+    if not snapshot or not isinstance(snapshot, str):
+        raise ValidationError("snapshot is required (an id, or a name / 'latest' with configuration).")
+    result = await ctx.saverestore_service.restore(snapshot, str(arguments.get("configuration") or ""))
+    return {**result, "next_step": _ASK_ABOUT_LOGBOOK}
+
+
 async def _create_saverestore_configuration(arguments: dict[str, Any], ctx: AppContext) -> dict[str, Any]:
     name = arguments.get("name")
     folder = arguments.get("folder")
@@ -219,9 +291,10 @@ TOOLS = [
             "Search or browse Phoebus save-and-restore: pass query for free-text search across all "
             "folders/configurations/snapshots, or node_id (a folder's uniqueId from a previous result) to "
             "list that folder's direct children. A CONFIGURATION defines which PVs a snapshot covers; a "
-            "SNAPSHOT is a saved set of PV values at a point in time. Use the returned uniqueId with "
-            "get_snapshot to read a configuration's PV list or a snapshot's saved values. Read-only: "
-            "ARGUS can read saved configurations/snapshots but cannot restore (apply) one back to live PVs."
+            "SNAPSHOT is a saved set of PV values at a point in time. Pass configuration to list a "
+            "configuration's snapshots, newest first. Use the returned uniqueId with get_snapshot to read a "
+            "configuration's PV list or a snapshot's saved values. Read-only; restoring is "
+            "restore_saverestore_snapshot."
         ),
         input_schema=_SEARCH_SNAPSHOTS_SCHEMA,
         handler=_search_snapshots,
@@ -264,5 +337,22 @@ TOOLS = [
         handler=_take_saverestore_snapshot,
         writes=True,
         describe=_describe_take_snapshot,
+    ),
+    ToolDefinition(
+        name="restore_saverestore_snapshot",
+        description=(
+            "WRITES TO THE LIVE MACHINE: restores a save-and-restore snapshot - the service writes each saved "
+            "setpoint back (never readbacks or read-only PVs), under the user's own name. Use it ONLY when the "
+            "user explicitly asks to restore a specific snapshot (or 'the latest' of a named configuration); "
+            "never on your own initiative, never to 'check' anything. Always two steps for every client: the "
+            "first call changes nothing and returns, PV by PV, what would change from the live value to the "
+            "saved one - show that to the user, and restore only after they explicitly confirm it. Afterwards "
+            "report any PVs that failed. To find snapshots, use search_snapshots with configuration."
+        ),
+        input_schema=_RESTORE_SCHEMA,
+        handler=_restore_saverestore_snapshot,
+        writes=True,
+        always_confirm=True,
+        describe=_describe_restore,
     ),
 ]
