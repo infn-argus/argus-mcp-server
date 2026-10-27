@@ -80,15 +80,17 @@ class LogbookProvider:
             # was never actually filtering by it.
             params["text"] = text
         if since:
-            # phoebus-olog's TimestampFormats.parse() (server-side) only accepts
-            # space-separated "yyyy-MM-dd HH:mm:ss.SSS"-style patterns or strict
-            # DateTimeFormatter.ISO_INSTANT, which requires a literal "Z" suffix
-            # -- confirmed by reading phoebus/core/util TimestampFormats.java's
-            # absolute_parsers list, none of which accept a numeric UTC offset.
-            # Python's datetime.isoformat() always emits "+00:00" for a UTC-aware
-            # datetime, never "Z", so every start= query was rejected server-side
-            # with "Invalid start and end times" (400) until now.
-            params["start"] = since.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+            # phoebus-olog parses start/end with its own TimestampFormats
+            # (phoebus-olog/src/main/java/org/phoebus/util/time/), which only
+            # knows space-separated patterns - "yyyy-MM-dd HH:mm:ss.SSS" and
+            # shorter - and no ISO form at all: "2026-10-20T15:10:00Z" is
+            # rejected with 400 "Invalid start and end times", confirmed live
+            # against BTF's Olog (the copy in phoebus/core/util does accept
+            # ISO_INSTANT, which is what an earlier fix was based on). Those
+            # patterns carry no zone: Olog reads them in the `tz` parameter's
+            # zone, else the server's own. So send UTC and say so.
+            params["start"] = _olog_timestamp(since)
+            params["tz"] = "UTC"
 
         url = f"{self._settings.base_url}/Olog/logs"
         try:
@@ -128,6 +130,12 @@ class LogbookProvider:
             raise LogbookUnavailableError(f"Logbook unreachable: {exc}") from exc
 
         return _to_entry(payload)
+
+
+def _olog_timestamp(when: datetime) -> str:
+    """`when` in UTC, as Olog's "yyyy-MM-dd HH:mm:ss.SSS"; a naive datetime is taken as UTC."""
+    utc = when.astimezone(timezone.utc) if when.tzinfo else when.replace(tzinfo=timezone.utc)
+    return utc.strftime("%Y-%m-%d %H:%M:%S.") + f"{utc.microsecond // 1000:03d}"
 
 
 def _to_entry(payload: dict) -> LogbookEntry:

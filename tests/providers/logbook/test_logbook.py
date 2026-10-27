@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -59,20 +59,41 @@ async def test_search_entries_sends_text_param_not_search():
 
 
 @respx.mock
-async def test_search_entries_sends_since_as_iso_instant_with_z_suffix():
-    # phoebus-olog's server-side TimestampFormats.parse() (confirmed by reading
-    # phoebus/core/util TimestampFormats.java) only accepts space-separated
-    # patterns or strict ISO_INSTANT ending in literal "Z" -- a numeric "+00:00"
-    # offset (Python's datetime.isoformat() default) is rejected with 400
-    # "Invalid start and end times". Regression test for that exact bug.
+async def test_search_entries_sends_since_in_olog_format_as_utc():
+    # phoebus-olog's own TimestampFormats only parses space-separated
+    # "yyyy-MM-dd HH:mm:ss.SSS"-style patterns - no ISO form at all, with "Z"
+    # or "+00:00" - read in the `tz` parameter's zone (else the server's).
+    # Confirmed live against BTF's Olog: "2026-10-20T15:10:00Z" -> 400,
+    # "2026-10-20 15:10:00.000" + tz=UTC -> 200. Regression test for the 400.
     provider = _configured()
     route = respx.get("http://olog.test/Olog/logs").mock(return_value=httpx.Response(200, json=[]))
     since = datetime(2026, 7, 15, 14, 56, 42, 900935, tzinfo=timezone.utc)
     await provider.search_entries(text="QF12", since=since)
 
     sent_params = dict(route.calls.last.request.url.params)
-    assert sent_params["start"] == "2026-07-15T14:56:42.900935Z"
-    assert "+00:00" not in sent_params["start"]
+    assert sent_params["start"] == "2026-07-15 14:56:42.900"
+    assert sent_params["tz"] == "UTC"
+
+
+@respx.mock
+async def test_search_entries_converts_since_to_utc_and_reads_naive_as_utc():
+    provider = _configured()
+    route = respx.get("http://olog.test/Olog/logs").mock(return_value=httpx.Response(200, json=[]))
+    rome = timezone(timedelta(hours=2))
+    await provider.search_entries(since=datetime(2026, 7, 15, 16, 56, 42, tzinfo=rome))
+    assert dict(route.calls.last.request.url.params)["start"] == "2026-07-15 14:56:42.000"
+
+    await provider.search_entries(since=datetime(2026, 7, 15, 14, 56, 42))
+    assert dict(route.calls.last.request.url.params)["start"] == "2026-07-15 14:56:42.000"
+
+
+@respx.mock
+async def test_search_entries_without_since_sends_no_time_window():
+    provider = _configured()
+    route = respx.get("http://olog.test/Olog/logs").mock(return_value=httpx.Response(200, json=[]))
+    await provider.search_entries(text="QF12")
+    sent_params = dict(route.calls.last.request.url.params)
+    assert "start" not in sent_params and "tz" not in sent_params
 
 
 @respx.mock
