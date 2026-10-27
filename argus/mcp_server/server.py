@@ -17,10 +17,11 @@ from argus.config.logging import configure_logging
 from argus.config.settings import Settings
 from argus.core.context import AppContext
 from argus.mcp_server.correlation import current_http_request, extract_correlation_headers
-from argus.mcp_server.tools.beamline_tools import TOOLS as BEAMLINE_TOOLS
+from argus.mcp_server.tools import beamline_tools
 from argus.mcp_server.tools.device_tools import TOOLS as DEVICE_TOOLS
 from argus.mcp_server.tools.docs_tools import TOOLS as DOCS_TOOLS
 from argus.mcp_server.tools.history_tools import TOOLS as HISTORY_TOOLS
+from argus.mcp_server.tools.hub_tools import TOOLS as HUB_TOOLS
 from argus.mcp_server.tools.knowledge_tools import TOOLS as KNOWLEDGE_TOOLS
 from argus.mcp_server.tools.logs_tools import TOOLS as LOGS_TOOLS
 from argus.mcp_server.tools.ops_tools import TOOLS as OPS_TOOLS
@@ -33,12 +34,14 @@ from argus.mcp_server.transports.stdio import run_stdio
 SERVER_NAME = "argus"
 
 
-def build_registry() -> ToolRegistry:
+def build_registry(settings: Settings | None = None) -> ToolRegistry:
+    """The tool set for these settings; without settings, the legacy (YAML inventory) one."""
+    inventory_source = settings.inventory_backend if settings else "yaml"
     registry = ToolRegistry()
     # beamline_tools first: list_beamline_devices is the intended first call
     # for most device/IOC/zone questions, and tool list position can bias
     # model tool-selection priority, not just the description text.
-    registry.register_many(BEAMLINE_TOOLS)
+    registry.register_many(beamline_tools.tools(inventory_source))
     registry.register_many(PV_TOOLS)
     registry.register_many(DEVICE_TOOLS)
     registry.register_many(HISTORY_TOOLS)
@@ -47,6 +50,8 @@ def build_registry() -> ToolRegistry:
     registry.register_many(DOCS_TOOLS)
     registry.register_many(KNOWLEDGE_TOOLS)
     registry.register_many(SAVERESTORE_TOOLS)
+    if settings and settings.knowledge_hub.url and settings.knowledge_hub.token:
+        registry.register_many(HUB_TOOLS)
     return registry
 
 
@@ -85,7 +90,7 @@ def main(argv: list[str] | None = None) -> None:
     configure_logging(settings)
 
     ctx = AppContext.build(settings)
-    registry = build_registry()
+    registry = build_registry(settings)
     server = build_mcp_server(registry, ctx)
 
     if settings.transport == "stdio":

@@ -15,6 +15,7 @@ from argus.providers.archiver.archiver_appliance import ArchiverApplianceProvide
 from argus.providers.argocd.argocd import ArgoCDProvider
 from argus.providers.channelfinder.channelfinder import ChannelFinderProvider
 from argus.providers.documentation.interface import DocumentationProvider
+from argus.providers.documentation.knowledge_hub import KnowledgeHubDocumentationProvider
 from argus.providers.documentation.rag import LocalTfidfDocumentationProvider
 from argus.providers.documentation.ragflow import RagflowDocumentationProvider
 from argus.providers.elastic.elasticsearch import ElasticsearchProvider
@@ -24,6 +25,8 @@ from argus.providers.epics.pvaccess import PvAccessProvider
 from argus.providers.kubernetes.kubernetes import KubernetesProvider
 from argus.providers.git.github import GitHubProvider
 from argus.providers.git.gitlab import GitLabProvider
+from argus.providers.knowledge_hub.client import KnowledgeHubClient
+from argus.providers.logbook.knowledge_hub import KnowledgeHubLogbookProvider
 from argus.providers.logbook.logbook import LogbookProvider
 from argus.providers.loki.loki import LokiProvider
 from argus.providers.saverestore.saverestore import SaveRestoreProvider
@@ -32,6 +35,7 @@ from argus.services.device_service import DeviceService
 from argus.services.diagnostics_service import DiagnosticsService
 from argus.services.documentation_service import DocumentationService
 from argus.services.history_service import HistoryService
+from argus.services.knowledge_hub_inventory_service import KnowledgeHubInventoryService
 from argus.services.knowledge_service import KnowledgeService
 from argus.services.operations_service import OperationsService, ProcedureRegistry
 from argus.services.saverestore_service import SaveRestoreService
@@ -47,7 +51,7 @@ class AppContext:
     channelfinder: ChannelFinderProvider
     kubernetes: KubernetesProvider
     argocd: ArgoCDProvider
-    logbook: LogbookProvider
+    logbook: LogbookProvider | KnowledgeHubLogbookProvider
     elastic: ElasticsearchProvider
     loki: LokiProvider
     documentation: DocumentationProvider
@@ -66,8 +70,14 @@ class AppContext:
     history_service: HistoryService
     documentation_service: DocumentationService
     knowledge_service: KnowledgeService
-    beamline_inventory_service: BeamlineInventoryService
+    beamline_inventory_service: BeamlineInventoryService | KnowledgeHubInventoryService
     saverestore_service: SaveRestoreService
+
+    # The ARGUS Knowledge Hub's MCP client, shared by whichever of
+    # inventory/documentation/logbook are configured to read from it. Built
+    # whether or not any of them is (it's what list_knowledge_hub_workspaces
+    # answers from), and unconfigured without KNOWLEDGE_HUB_URL/TOKEN.
+    knowledge_hub: KnowledgeHubClient | None = None
 
     @classmethod
     def build(cls, settings: Settings | None = None) -> AppContext:
@@ -79,12 +89,21 @@ class AppContext:
         channelfinder = ChannelFinderProvider(settings.channelfinder)
         kubernetes = KubernetesProvider(settings.kubernetes)
         argocd = ArgoCDProvider(settings.argocd)
-        logbook = LogbookProvider(settings.logbook)
+        knowledge_hub = KnowledgeHubClient(settings.knowledge_hub)
+        olog = LogbookProvider(settings.logbook)
+        logbook: LogbookProvider | KnowledgeHubLogbookProvider
+        if settings.logbook_backend == "knowledge_hub":
+            # Reads from the hub; posting still goes to Olog (the hub is read-only).
+            logbook = KnowledgeHubLogbookProvider(knowledge_hub, writer=olog)
+        else:
+            logbook = olog
         elastic = ElasticsearchProvider(settings.elastic)
         loki = LokiProvider(settings.loki)
         documentation: DocumentationProvider
         if settings.documentation_backend == "ragflow":
             documentation = RagflowDocumentationProvider(settings.ragflow)
+        elif settings.documentation_backend == "knowledge_hub":
+            documentation = KnowledgeHubDocumentationProvider(knowledge_hub)
         else:
             documentation = LocalTfidfDocumentationProvider(settings.documentation)
         github = GitHubProvider(settings.github)
@@ -126,7 +145,11 @@ class AppContext:
             default_ref=settings.git_default_ref,
             cache=knowledge_cache,
         )
-        beamline_inventory_service = BeamlineInventoryService(knowledge=knowledge_service)
+        beamline_inventory_service: BeamlineInventoryService | KnowledgeHubInventoryService
+        if settings.inventory_backend == "knowledge_hub":
+            beamline_inventory_service = KnowledgeHubInventoryService(knowledge_hub)
+        else:
+            beamline_inventory_service = BeamlineInventoryService(knowledge=knowledge_service)
         saverestore_service = SaveRestoreService(saverestore=saverestore)
 
         return cls(
@@ -156,4 +179,5 @@ class AppContext:
             knowledge_service=knowledge_service,
             beamline_inventory_service=beamline_inventory_service,
             saverestore_service=saverestore_service,
+            knowledge_hub=knowledge_hub,
         )

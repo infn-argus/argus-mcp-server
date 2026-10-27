@@ -53,6 +53,33 @@ class BeamlineDevice:
     # device's devgroup profile (services/device_types/). Empty if the
     # devgroup has no registered profile or key PVs yet.
     key_pvs: dict[str, str] = field(default_factory=dict)
+    # Knowledge Hub source only (None from the YAML): the workspace the
+    # record was read in and its ready-made Markdown link to the record's
+    # page in the hub. list_beamline_devices drops them when None, so the
+    # YAML source's output is unchanged.
+    workspace: str | None = None
+    link: str | None = None
+
+
+@dataclass
+class InventoryListing:
+    """What list_beamline_devices returns, whichever source answered."""
+
+    source: str
+    devices: list[BeamlineDevice]
+    # Anything the caller should know the listing may be missing (a
+    # workspace that failed, a hub too old to page through every device).
+    notes: list[str] = field(default_factory=list)
+
+
+def matches_filters(device: BeamlineDevice, devgroup: str | None, devfunc: str | None, zone: str | None) -> bool:
+    if devgroup and device.devgroup != devgroup:
+        return False
+    if devfunc and device.devfunc != devfunc:
+        return False
+    if zone and zone not in device.zones and "ALL" not in device.zones:
+        return False
+    return True
 
 
 def _merge_ioc_defaults(ioc_defaults: dict, ioc: dict) -> dict:
@@ -150,12 +177,21 @@ class BeamlineInventoryService:
                     key_pvs=profile.key_pvs(iocprefix, name) if profile else {},
                 )
 
-                if devgroup and device.devgroup != devgroup:
-                    continue
-                if devfunc and device.devfunc != devfunc:
-                    continue
-                if zone and zone not in device.zones and "ALL" not in device.zones:
-                    continue
-                devices.append(device)
+                if matches_filters(device, devgroup, devfunc, zone):
+                    devices.append(device)
 
         return devices
+
+    async def list_inventory(
+        self,
+        repo: str | None,
+        path: str = DEFAULT_INVENTORY_PATH,
+        ref: str = "HEAD",
+        devgroup: str | None = None,
+        devfunc: str | None = None,
+        zone: str | None = None,
+        workspace: str | None = None,
+    ) -> InventoryListing:
+        # workspace is the Knowledge Hub source's argument; a YAML has none.
+        devices = await self.list_devices(repo, path=path, ref=ref, devgroup=devgroup, devfunc=devfunc, zone=zone)
+        return InventoryListing(source="yaml", devices=devices)

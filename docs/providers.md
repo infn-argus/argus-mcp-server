@@ -39,9 +39,19 @@ method on an unconfigured provider raises that provider's
 | Elasticsearch | `providers/elastic/elasticsearch.py` | official [`elasticsearch`](https://pypi.org/project/elasticsearch/) async client | `ELASTIC_URL`, `ELASTIC_API_KEY`, `ELASTIC_DEFAULT_INDEX` | `ElasticsearchUnavailableError`, `ElasticsearchQueryError` |
 | Documentation | `providers/documentation/rag.py` | local TF-IDF (`scikit-learn`) over a docs folder — no external service | `DOCS_PATH`, `DOCS_INDEX_PATH` | `DocumentationUnconfiguredError`, `DocumentationIndexError` |
 | Documentation (RAGFLOW) | `providers/documentation/ragflow.py` | REST: RAGFLOW's own `/api/v1/retrieval` — called server-to-server, not via RAGFLOW's separate MCP bridge | `DOCUMENTATION_BACKEND=ragflow`, `RAGFLOW_BASE_URL`, `RAGFLOW_API_KEY`, `RAGFLOW_DATASET_IDS`, `RAGFLOW_TIMEOUT_SECONDS` (default 20s — an unscoped search across every accessible dataset is slower than local TF-IDF) | `DocumentationUnconfiguredError`, `DocumentationUnavailableError`, `DocumentationTimeoutError`, `DocumentationQueryError` |
+| Knowledge Hub (client) | `providers/knowledge_hub/client.py` | MCP over streamable HTTP: argus-knowledge-hub's own `/mcp` (JSON-RPC `initialize` + `tools/call`, JSON or SSE answers) | `KNOWLEDGE_HUB_URL`, `KNOWLEDGE_HUB_TOKEN`, `KNOWLEDGE_HUB_WORKSPACES`, `KNOWLEDGE_HUB_TIMEOUT_SECONDS` | `KnowledgeHubUnconfiguredError`, `KnowledgeHubUnavailableError`, `KnowledgeHubAuthError`, `KnowledgeHubTimeoutError`, `KnowledgeHubQueryError` |
+| Documentation (Knowledge Hub) | `providers/documentation/knowledge_hub.py` | hub tools `search_knowledge`, falling back to `search_documents` per workspace without an embedding index | `DOCUMENTATION_BACKEND=knowledge_hub` | `Documentation*` hierarchy |
+| Logbook (Knowledge Hub) | `providers/logbook/knowledge_hub.py` | hub tools `search_documents` (type `Logbook Entry`) + `get_document`; posting delegated to Olog | `LOGBOOK_BACKEND=knowledge_hub` | `Logbook*` hierarchy |
 | Save & Restore | `providers/saverestore/saverestore.py` | REST: Phoebus save-and-restore's `/search`, `/node/{id}`, `/config/{id}`, `/snapshot/{id}` — read-only, endpoints confirmed live against a real deployment | `SAVERESTORE_BASE_URL` | `SaveRestoreUnconfiguredError`, `SaveRestoreUnavailableError`, `SaveRestoreTimeoutError`, `SaveRestoreQueryError` |
 
 ## Notes
+
+- **The ARGUS Knowledge Hub is an alternative source** for the device
+  inventory (`INVENTORY_BACKEND`), documentation (`DOCUMENTATION_BACKEND`)
+  and logbook reads (`LOGBOOK_BACKEND`), all through one MCP client — see
+  [ADR 0004](adr/0004-knowledge-hub-as-alternative-source.md). The tool
+  names and result shapes don't change, so the same question can be put to
+  a YAML-backed and a hub-backed ARGUS side by side.
 
 - **EPICS is the only provider expected to have live credentials by
   default.** Every other provider is real, working code — it just reports

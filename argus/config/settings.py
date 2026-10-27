@@ -98,6 +98,24 @@ class RagflowSettings(_ProviderSettings):
     timeout_seconds: float = Field(default=20.0, alias="RAGFLOW_TIMEOUT_SECONDS")
 
 
+class KnowledgeHubSettings(_ProviderSettings):
+    # The ARGUS Knowledge Hub's MCP endpoint (streamable HTTP), e.g.
+    # https://argus-hub-api.example.org/mcp -- the hub serves its MCP from
+    # its own API, behind the same personal access token as its REST API.
+    url: str | None = Field(default=None, alias="KNOWLEDGE_HUB_URL")
+    # A personal access token generated in the hub (My account -> Personal
+    # access tokens, "argus_pat_..."). It reads what its owner may read: an
+    # administrator's token with the `admin` scope and no fixed workspace
+    # reads every workspace; a read-only token reads only the workspaces its
+    # owner holds a role in (or that are open to everyone).
+    token: str | None = Field(default=None, alias="KNOWLEDGE_HUB_TOKEN")
+    # Comma-separated workspace ids to ask in (e.g. "btf,controls-catalogue").
+    # Blank = every workspace the token may read, as the hub's own
+    # list_workspaces reports it. Each search fans out across all of them.
+    workspaces: str | None = Field(default=None, alias="KNOWLEDGE_HUB_WORKSPACES")
+    timeout_seconds: float = Field(default=20.0, alias="KNOWLEDGE_HUB_TIMEOUT_SECONDS")
+
+
 class GitHubSettings(_ProviderSettings):
     base_url: str = Field(default="https://api.github.com", alias="GITHUB_BASE_URL")
     token: str | None = Field(default=None, alias="GITHUB_TOKEN")
@@ -140,9 +158,25 @@ class Settings(BaseSettings):
     git_default_ref: str = Field(default="HEAD", alias="GIT_DEFAULT_REF")
 
     # Which DocumentationProvider backs search_documentation. "ragflow"
-    # requires ragflow.base_url + ragflow.api_key; falls back to local
-    # TF-IDF behavior either way if ragflow isn't actually configured.
-    documentation_backend: Literal["local", "ragflow"] = Field(default="local", alias="DOCUMENTATION_BACKEND")
+    # requires ragflow.base_url + ragflow.api_key; "knowledge_hub" requires
+    # knowledge_hub.url + knowledge_hub.token. Either reports itself as
+    # unconfigured (rather than silently falling back) when its settings are
+    # missing.
+    documentation_backend: Literal["local", "ragflow", "knowledge_hub"] = Field(
+        default="local", alias="DOCUMENTATION_BACKEND"
+    )
+
+    # Where list_beamline_devices reads the device inventory from: "yaml"
+    # parses the beamline's epik8s deploy YAML from its git repo (the legacy
+    # path); "knowledge_hub" reads the Control Device records the hub
+    # imported from that same configuration.
+    inventory_backend: Literal["yaml", "knowledge_hub"] = Field(default="yaml", alias="INVENTORY_BACKEND")
+
+    # Where logbook reads (get_alarm_history, diagnose_device, machine_summary)
+    # come from: "olog" queries the Olog REST API; "knowledge_hub" searches
+    # the Logbook Entry documents the hub keeps of that Olog. The hub is
+    # read-only, so create_logbook_entry always posts to Olog either way.
+    logbook_backend: Literal["olog", "knowledge_hub"] = Field(default="olog", alias="LOGBOOK_BACKEND")
 
     epics: EpicsSettings = Field(default_factory=EpicsSettings)
     archiver: ArchiverSettings = Field(default_factory=ArchiverSettings)
@@ -155,6 +189,7 @@ class Settings(BaseSettings):
     loki: LokiSettings = Field(default_factory=LokiSettings)
     documentation: DocumentationSettings = Field(default_factory=DocumentationSettings)
     ragflow: RagflowSettings = Field(default_factory=RagflowSettings)
+    knowledge_hub: KnowledgeHubSettings = Field(default_factory=KnowledgeHubSettings)
     github: GitHubSettings = Field(default_factory=GitHubSettings)
     gitlab: GitLabSettings = Field(default_factory=GitLabSettings)
     cache: CacheSettings = Field(default_factory=CacheSettings)
