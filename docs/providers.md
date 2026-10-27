@@ -42,7 +42,7 @@ method on an unconfigured provider raises that provider's
 | Knowledge Hub (client) | `providers/knowledge_hub/client.py` | MCP over streamable HTTP: argus-knowledge-hub's own `/mcp` (JSON-RPC `initialize` + `tools/call`, JSON or SSE answers) | `KNOWLEDGE_HUB_URL`, `KNOWLEDGE_HUB_TOKEN`, `KNOWLEDGE_HUB_WORKSPACES`, `KNOWLEDGE_HUB_TIMEOUT_SECONDS` | `KnowledgeHubUnconfiguredError`, `KnowledgeHubUnavailableError`, `KnowledgeHubAuthError`, `KnowledgeHubTimeoutError`, `KnowledgeHubQueryError` |
 | Documentation (Knowledge Hub) | `providers/documentation/knowledge_hub.py` | hub tools `search_knowledge`, falling back to `search_documents` per workspace without an embedding index | `DOCUMENTATION_BACKEND=knowledge_hub` | `Documentation*` hierarchy |
 | Logbook (Knowledge Hub) | `providers/logbook/knowledge_hub.py` | hub tools `search_documents` (type `Logbook Entry`) + `get_document`; posting delegated to Olog | `LOGBOOK_BACKEND=knowledge_hub` | `Logbook*` hierarchy |
-| Save & Restore | `providers/saverestore/saverestore.py` | REST: Phoebus save-and-restore's `/search`, `/node/{id}`, `/config/{id}`, `/snapshot/{id}` — read-only, endpoints confirmed live against a real deployment | `SAVERESTORE_BASE_URL` | `SaveRestoreUnconfiguredError`, `SaveRestoreUnavailableError`, `SaveRestoreTimeoutError`, `SaveRestoreQueryError` |
+| Save & Restore | `providers/saverestore/saverestore.py` | REST: Phoebus save-and-restore's `/search`, `/node/{id}`, `/config/{id}`, `/snapshot/{id}`; creating with the caller's token (INFN build, JWT): `PUT /config`, `GET /take-snapshot/{config}` + `PUT /snapshot`. Never restores | `SAVERESTORE_BASE_URL` | `SaveRestoreUnconfiguredError`, `SaveRestoreUnavailableError`, `SaveRestoreTimeoutError`, `SaveRestoreQueryError` |
 
 ## Notes
 

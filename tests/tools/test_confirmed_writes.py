@@ -12,7 +12,10 @@ from argus.mcp_server.server import build_registry
 from argus.providers.logbook.logbook import LogbookProvider
 from argus.services.history_service import HistoryService
 
-WRITE_TOOLS = {"set_pv", "set_pv_value", "restart_ioc", "execute_procedure", "create_logbook_entry", "update_logbook_entry"}
+WRITE_TOOLS = {
+    "set_pv", "set_pv_value", "restart_ioc", "execute_procedure", "create_logbook_entry", "update_logbook_entry",
+    "create_saverestore_configuration", "take_saverestore_snapshot",
+}
 
 
 def _with_olog(app_context: AppContext) -> AppContext:

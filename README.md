@@ -88,6 +88,8 @@ input schemas, enforced by
 | `search_knowledge_base` | Search issues/tickets across configured repos for past problems and resolutions (GitHub/GitLab) |
 | `search_snapshots` | Search/browse Phoebus save-and-restore configurations and snapshots (read-only) |
 | `get_snapshot` | Read a save-and-restore configuration's PV list, or a snapshot's saved values (read-only) |
+| `create_saverestore_configuration` | Create a save-and-restore configuration from devices' setpoint (+ readback) PVs, as the signed-in user |
+| `take_saverestore_snapshot` | Snapshot an existing configuration (the service reads the PVs), as the signed-in user; never restores |
 
 ## Knowledge source: legacy YAML/RAG/Olog, or the ARGUS Knowledge Hub
 
@@ -115,7 +117,8 @@ side — see [ADR 0004](docs/adr/0004-knowledge-hub-as-alternative-source.md).
 ## Confirmed writes
 
 Write tools (`set_pv`, `set_pv_value`, `restart_ioc`, `execute_procedure`,
-`create_logbook_entry`, `update_logbook_entry`) can be confirmed in two
+`create_logbook_entry`, `update_logbook_entry`,
+`create_saverestore_configuration`, `take_saverestore_snapshot`) can be confirmed in two
 steps, for clients that send `X-Argus-Confirm-Writes: true` (LibreChat's
 registrations do; it has no approval step of its own). The first call
 changes nothing: it returns `confirmation_required`, a plain-language

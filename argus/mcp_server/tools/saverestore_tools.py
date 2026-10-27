@@ -1,6 +1,13 @@
-"""Phoebus save-and-restore tools. Read-only: search/browse saved
-configurations and snapshots and read their PV values, but never apply
-(restore) a snapshot — see providers/saverestore/saverestore.py for why.
+"""Phoebus save-and-restore tools: search/browse configurations and
+snapshots and read their PV values; create configurations (from devices'
+setpoint PVs) and snapshots (of an existing configuration), as the
+signed-in user. Never apply (restore) a snapshot — see
+providers/saverestore/saverestore.py for why.
+
+The two creating tools are writes: two-step confirmation for clients that
+ask for it, with a preview listing what will really be saved. Their results
+carry a logbook_suggestion, and the model is told to ask the user whether
+to record the operation in the logbook.
 """
 
 from __future__ import annotations
@@ -72,6 +79,139 @@ async def _get_snapshot(arguments: dict[str, Any], ctx: AppContext) -> dict[str,
     }
 
 
+_CREATE_CONFIGURATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "description": "Name of the new configuration (unique in its folder)."},
+        "folder": {
+            "type": "string",
+            "description": "Existing save-and-restore folder to create it in: a path from the root such as "
+            "'BTF_CONF' or 'BTF_CONF/Magnets', or a folder's uniqueId. Folders are not created; a wrong one "
+            "is answered with the folders that exist there.",
+        },
+        "devices": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Device names from list_beamline_devices. Each contributes its setpoint PVs (e.g. a "
+            "magnet's CURRENT_SP and STATE_SP), paired with their readbacks if include_readbacks.",
+        },
+        "include_readbacks": {
+            "type": "boolean",
+            "description": "Also record each setpoint's readback PV (e.g. CURRENT_RB), saved alongside it in "
+            "snapshots for comparison; never restored. Default true.",
+        },
+        "pvs": {
+            "type": "array",
+            "items": {
+                "anyOf": [
+                    {"type": "string"},
+                    {
+                        "type": "object",
+                        "properties": {"setpoint": {"type": "string"}, "readback": {"type": "string"}},
+                        "required": ["setpoint"],
+                    },
+                ]
+            },
+            "description": "Extra PVs given explicitly - for devices without a setpoint convention (motors, "
+            "vacuum): a PV name, or {setpoint, readback}.",
+        },
+        "description": {"type": "string", "description": "Optional description of the configuration."},
+    },
+    "required": ["name", "folder"],
+}
+
+_TAKE_SNAPSHOT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "configuration": {
+            "type": "string",
+            "description": "The existing configuration to snapshot: its path such as 'BTF_CONF/Quadrupoles', or "
+            "its uniqueId (search_snapshots finds both). A snapshot always belongs to a configuration.",
+        },
+        "name": {"type": "string", "description": "Snapshot name. Default: the configuration name and the time."},
+        "comment": {"type": "string", "description": "Why the snapshot was taken (e.g. 'before the energy change')."},
+    },
+    "required": ["configuration"],
+}
+
+_ASK_ABOUT_LOGBOOK = (
+    "Tell the user what was done, then ASK whether to record it in the logbook. Only if they say yes, call "
+    "create_logbook_entry with logbook_suggestion's title and text (adjusted as they wish) in one of this "
+    "facility's logbooks; it will ask for its own confirmation."
+)
+
+
+async def _plan_text(arguments: dict[str, Any], ctx: AppContext) -> tuple[str, Any]:
+    plan = await ctx.saverestore_service.plan_configuration(
+        _string_list(arguments.get("devices"), "devices"),
+        include_readbacks=arguments.get("include_readbacks", True) is not False,
+        pvs=arguments.get("pvs"),
+    )
+    lines = [f"{pv.pv_name}" + (f" (readback {pv.readback_pv_name})" if pv.readback_pv_name else "") for pv in plan.pv_list]
+    return "; ".join(lines), plan
+
+
+def _string_list(value: Any, field: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ValidationError(f"{field} must be a list of strings.")
+    return value
+
+
+async def _describe_create_configuration(arguments: dict[str, Any], ctx: AppContext) -> str:
+    pv_text, plan = await _plan_text(arguments, ctx)
+    if not plan.pv_list:
+        skipped = "; ".join(f"{d}: {why}" for d, why in plan.skipped.items()) or "no devices or PVs given"
+        raise ValidationError(f"Nothing to save: {skipped}.")
+    _, folder_path = await ctx.saverestore_service.resolve_folder(str(arguments.get("folder") or ""))
+    skipped = (
+        " Not included: " + "; ".join(f"{d} ({why})" for d, why in plan.skipped.items()) + "." if plan.skipped else ""
+    )
+    return (
+        f"Create the save-and-restore configuration {folder_path}/{arguments.get('name')} under your name, "
+        f"with {len(plan.pv_list)} PV(s): {pv_text}.{skipped}"
+    )
+
+
+async def _describe_take_snapshot(arguments: dict[str, Any], ctx: AppContext) -> str:
+    config, path = await ctx.saverestore_service.resolve_configuration(str(arguments.get("configuration") or ""))
+    name = arguments.get("name") or f"{config.name} <now>"
+    comment = f", comment {arguments['comment']!r}" if arguments.get("comment") else ""
+    return (
+        f"Take a snapshot {name!r} of the configuration {path} under your name: the save-and-restore service "
+        f"reads its PVs now and saves their values{comment}. Nothing on the machine is changed."
+    )
+
+
+async def _create_saverestore_configuration(arguments: dict[str, Any], ctx: AppContext) -> dict[str, Any]:
+    name = arguments.get("name")
+    folder = arguments.get("folder")
+    if not name or not isinstance(name, str):
+        raise ValidationError("name is required.")
+    if not folder or not isinstance(folder, str):
+        raise ValidationError("folder is required (an existing folder path or id).")
+    result = await ctx.saverestore_service.create_configuration(
+        name,
+        folder,
+        _string_list(arguments.get("devices"), "devices"),
+        include_readbacks=arguments.get("include_readbacks", True) is not False,
+        pvs=arguments.get("pvs"),
+        description=arguments.get("description") or "",
+    )
+    return {**result, "next_step": _ASK_ABOUT_LOGBOOK}
+
+
+async def _take_saverestore_snapshot(arguments: dict[str, Any], ctx: AppContext) -> dict[str, Any]:
+    configuration = arguments.get("configuration")
+    if not configuration or not isinstance(configuration, str):
+        raise ValidationError("configuration is required (a configuration path or id).")
+    result = await ctx.saverestore_service.take_snapshot(
+        configuration, name=arguments.get("name") or "", comment=arguments.get("comment") or ""
+    )
+    return {**result, "next_step": _ASK_ABOUT_LOGBOOK}
+
+
 TOOLS = [
     ToolDefinition(
         name="search_snapshots",
@@ -95,5 +235,34 @@ TOOLS = [
         ),
         input_schema=_GET_SNAPSHOT_SCHEMA,
         handler=_get_snapshot,
+    ),
+    ToolDefinition(
+        name="create_saverestore_configuration",
+        description=(
+            "WRITES: creates a save-and-restore configuration (the list of PVs a snapshot will save), under "
+            "the user's own name, in an existing folder. Give devices from list_beamline_devices: each "
+            "contributes its setpoint PVs, with their readbacks if include_readbacks (default true). PVs of "
+            "devices without a setpoint convention can be given explicitly with pvs. Use only when the user "
+            "asks to create a configuration. To save current values, take a snapshot of it afterwards with "
+            "take_saverestore_snapshot."
+        ),
+        input_schema=_CREATE_CONFIGURATION_SCHEMA,
+        handler=_create_saverestore_configuration,
+        writes=True,
+        describe=_describe_create_configuration,
+    ),
+    ToolDefinition(
+        name="take_saverestore_snapshot",
+        description=(
+            "WRITES: takes a snapshot of an EXISTING save-and-restore configuration, under the user's own "
+            "name: the save-and-restore service reads the configuration's PVs now and stores their values. "
+            "Nothing on the machine changes. A snapshot always belongs to a configuration - to snapshot "
+            "devices with no configuration yet, create one first with create_saverestore_configuration. "
+            "Never restores anything."
+        ),
+        input_schema=_TAKE_SNAPSHOT_SCHEMA,
+        handler=_take_saverestore_snapshot,
+        writes=True,
+        describe=_describe_take_snapshot,
     ),
 ]

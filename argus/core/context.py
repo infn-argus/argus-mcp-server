@@ -150,7 +150,7 @@ class AppContext:
             beamline_inventory_service = KnowledgeHubInventoryService(knowledge_hub)
         else:
             beamline_inventory_service = BeamlineInventoryService(knowledge=knowledge_service)
-        saverestore_service = SaveRestoreService(saverestore=saverestore)
+        saverestore_service = SaveRestoreService(saverestore=saverestore, inventory=beamline_inventory_service)
 
         return cls(
             settings=settings,

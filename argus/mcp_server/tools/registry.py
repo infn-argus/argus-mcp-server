@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -49,8 +50,11 @@ class ToolDefinition:
     # to two-step confirmation for clients that ask for it (confirmation.py).
     writes: bool = False
     # Plain-language preview of what a call would do, shown to the user
-    # before they confirm; defaults to the tool name and its arguments.
-    describe: Callable[[dict[str, Any]], str] | None = None
+    # before they confirm; defaults to the tool name and its arguments. It may
+    # take (arguments, ctx) and be async, to show what will really happen
+    # (e.g. the PVs a configuration will get) - and an ArgusError it raises
+    # stops the call before any confirmation is asked for.
+    describe: Callable[..., str | Awaitable[str]] | None = None
 
     def as_mcp_tool(self, confirm_writes: bool = False) -> Tool:
         if not (self.writes and confirm_writes):
@@ -59,11 +63,13 @@ class ToolDefinition:
         schema["properties"] = {**schema.get("properties", {}), CONFIRMATION_ARG: _CONFIRM_PROPERTY}
         return Tool(name=self.name, description=self.description + _CONFIRM_NOTE, inputSchema=schema)
 
-    def preview(self, arguments: dict[str, Any]) -> str:
-        if self.describe is not None:
-            return self.describe(arguments)
-        shown = ", ".join(f"{k}={v!r}" for k, v in arguments.items())
-        return f"{self.name}({shown})"
+    async def preview(self, arguments: dict[str, Any], ctx: AppContext) -> str:
+        if self.describe is None:
+            shown = ", ".join(f"{k}={v!r}" for k, v in arguments.items())
+            return f"{self.name}({shown})"
+        takes_ctx = len(inspect.signature(self.describe).parameters) > 1
+        result = self.describe(arguments, ctx) if takes_ctx else self.describe(arguments)
+        return await result if inspect.isawaitable(result) else result
 
 
 class ToolRegistry:
@@ -100,7 +106,7 @@ class ToolRegistry:
             structlog.contextvars.bind_contextvars(tool=name)
             try:
                 if tool.writes and writes_need_confirmation():
-                    gate = self._confirmation_gate(tool, arguments, correlation)
+                    gate = await self._confirmation_gate(tool, arguments, ctx, correlation)
                     if gate is not None:
                         return [gate]
                     arguments = {k: v for k, v in arguments.items() if k != CONFIRMATION_ARG}
@@ -119,20 +125,21 @@ class ToolRegistry:
                 structlog.contextvars.unbind_contextvars("tool")
 
 
-    def _confirmation_gate(
-        self, tool: ToolDefinition, arguments: dict[str, Any], correlation: dict[str, str] | None
+    async def _confirmation_gate(
+        self, tool: ToolDefinition, arguments: dict[str, Any], ctx: AppContext, correlation: dict[str, str] | None
     ) -> TextContent | None:
         """None when this call carries a valid confirmation; otherwise the response that stands in for it."""
         caller = caller_key(current_caller_token(), correlation)
         confirmation_id = arguments.get(CONFIRMATION_ARG)
         call_args = {k: v for k, v in arguments.items() if k != CONFIRMATION_ARG}
         if not confirmation_id:
+            action = await tool.preview(call_args, ctx)  # may raise: nothing to confirm then
             issued = self.confirmations.issue(tool.name, call_args, caller)
             logger.info("write_confirmation_requested")
             return _json_response(
                 {
                     "status": "confirmation_required",
-                    "action": tool.preview(call_args),
+                    "action": action,
                     "tool": tool.name,
                     "arguments": call_args,
                     CONFIRMATION_ARG: issued,
