@@ -1,4 +1,4 @@
-from argus.mcp_server.correlation import current_http_request, extract_correlation_headers
+from argus.mcp_server.correlation import current_http_request, extract_caller_token, extract_correlation_headers
 
 
 class _FakeRequest:
@@ -70,3 +70,21 @@ def test_extract_correlation_headers_omits_empty_placeholder_values():
     # literal "" conversation_id log label.
     request = _FakeRequest({"x-librechat-conversation-id": ""})
     assert extract_correlation_headers(request) == {}
+
+
+def test_caller_token_is_read_from_its_own_header():
+    assert extract_caller_token(_FakeRequest({"x-argus-user-token": "eyJabc"})) == "eyJabc"
+    assert extract_caller_token(_FakeRequest({"x-argus-user-token": "Bearer eyJabc"})) == "eyJabc"
+
+
+def test_no_header_an_empty_one_or_an_unresolved_placeholder_is_no_token():
+    # LibreChat leaves the template as-is when it has no token to put in it.
+    assert extract_caller_token(_FakeRequest({})) is None
+    assert extract_caller_token(_FakeRequest({"x-argus-user-token": "  "})) is None
+    assert extract_caller_token(_FakeRequest({"x-argus-user-token": "{{LIBRECHAT_OPENID_ACCESS_TOKEN}}"})) is None
+    assert extract_caller_token(None) is None
+
+
+def test_the_caller_token_is_not_a_correlation_field():
+    # Correlation fields are bound to every log line; a credential must never be.
+    assert extract_correlation_headers(_FakeRequest({"x-argus-user-token": "eyJabc"})) == {}

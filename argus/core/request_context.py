@@ -11,9 +11,33 @@ import structlog
 
 request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 
+# The identity-provider access token of the person behind the current tool
+# call, when their client forwarded one (see mcp_server/correlation.py's
+# extract_caller_token). Deliberately separate from request_scope: it is a
+# credential, so it is never bound to structlog's contextvars and never
+# appears in a log line. Providers that can act as the caller (the Olog
+# logbook) read it with current_caller_token().
+_caller_token_var: ContextVar[str | None] = ContextVar("caller_token", default=None)
+
 
 def new_request_id() -> str:
     return uuid.uuid4().hex[:12]
+
+
+def current_caller_token() -> str | None:
+    """The calling person's access token for this tool call, or None."""
+    return _caller_token_var.get()
+
+
+@contextmanager
+def caller_token_scope(token: str | None) -> Iterator[None]:
+    """Make ``token`` the caller's token for everything run inside this scope,
+    including asyncio tasks created in it (they copy the context)."""
+    reset = _caller_token_var.set(token or None)
+    try:
+        yield
+    finally:
+        _caller_token_var.reset(reset)
 
 
 @contextmanager

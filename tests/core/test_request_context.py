@@ -1,6 +1,8 @@
 import structlog.contextvars
 
-from argus.core.request_context import request_scope
+import asyncio
+
+from argus.core.request_context import caller_token_scope, current_caller_token, request_scope
 
 
 async def test_request_scope_binds_request_id_only_by_default():
@@ -30,3 +32,23 @@ async def test_request_scope_with_no_extra_does_not_error():
     with request_scope(extra=None):
         bound = structlog.contextvars.get_contextvars()
         assert "request_id" in bound
+
+
+async def test_caller_token_scope_sets_and_restores_the_token():
+    assert current_caller_token() is None
+    with caller_token_scope("eyJabc"):
+        assert current_caller_token() == "eyJabc"
+    assert current_caller_token() is None
+    with caller_token_scope(None):
+        assert current_caller_token() is None
+
+
+async def test_caller_token_reaches_tasks_created_in_the_scope_and_never_structlog():
+    # Providers run as asyncio tasks (gather_with_timeout); they copy the context.
+    with request_scope(), caller_token_scope("eyJabc"):
+        assert await asyncio.create_task(_read_token()) == "eyJabc"
+        assert "eyJabc" not in structlog.contextvars.get_contextvars().values()
+
+
+async def _read_token():
+    return current_caller_token()

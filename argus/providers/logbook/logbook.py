@@ -3,6 +3,13 @@
 Olog/phoebus-olog is the de facto standard EPICS-world electronic logbook
 (used at SNS, ESS, BNL, etc.); this client is generic enough to also work
 against olog-API-compatible forks.
+
+Authentication: when the tool call carries the caller's own access token
+(core/request_context.current_caller_token - forwarded by LibreChat from the
+user's INFN AAI login), Olog is called as that person, Bearer token - Olog
+validates it as an OAuth2 resource server (its oauth2.issueUri), so reads
+follow their permissions and entries they create are theirs. Otherwise the
+configured account (LOGBOOK_USERNAME/LOGBOOK_PASSWORD), if any, is used.
 """
 
 from __future__ import annotations
@@ -13,6 +20,7 @@ from typing import ClassVar
 import httpx
 
 from argus.config.settings import LogbookSettings
+from argus.core.request_context import current_caller_token
 from argus.providers.base import ProviderHealth, ProviderStatus
 from argus.providers.logbook.exceptions import (
     LogbookQueryError,
@@ -36,6 +44,13 @@ class LogbookProvider:
         if self._settings.username and self._settings.password:
             return (self._settings.username, self._settings.password)
         return None
+
+    def _client(self, timeout: float) -> httpx.AsyncClient:
+        """As the caller when this tool call carries their token, else as the configured account."""
+        token = current_caller_token()
+        if token:
+            return httpx.AsyncClient(timeout=timeout, headers={"Authorization": f"Bearer {token}"})
+        return httpx.AsyncClient(timeout=timeout, auth=self._auth())
 
     async def health(self) -> ProviderHealth:
         if not self.is_configured():
@@ -94,7 +109,7 @@ class LogbookProvider:
 
         url = f"{self._settings.base_url}/Olog/logs"
         try:
-            async with httpx.AsyncClient(timeout=timeout, auth=self._auth()) as client:
+            async with self._client(timeout) as client:
                 resp = await client.get(url, params=params)
                 resp.raise_for_status()
                 payload = resp.json()
@@ -120,7 +135,7 @@ class LogbookProvider:
         }
         url = f"{self._settings.base_url}/Olog/logs"
         try:
-            async with httpx.AsyncClient(timeout=timeout, auth=self._auth()) as client:
+            async with self._client(timeout) as client:
                 resp = await client.put(url, json=body)
                 resp.raise_for_status()
                 payload = resp.json()
