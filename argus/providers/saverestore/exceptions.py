@@ -21,3 +21,9 @@ class SaveRestoreTimeoutError(SaveRestoreError, ProviderTimeoutError):
 
 class SaveRestoreQueryError(SaveRestoreError):
     code = "saverestore_query_error"
+
+
+class SaveRestoreRefusedError(SaveRestoreError):
+    """The service answered and refused (4xx): not signed in, a name already taken, a bad folder, ..."""
+
+    code = "saverestore_refused"
