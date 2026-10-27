@@ -21,3 +21,9 @@ class LogbookTimeoutError(LogbookError, ProviderTimeoutError):
 
 class LogbookQueryError(LogbookError):
     code = "logbook_query_error"
+
+
+class LogbookRefusedError(LogbookError):
+    """Olog answered, and refused the request (4xx): a bad logbook name, no permission, ..."""
+
+    code = "logbook_refused"

@@ -7,7 +7,12 @@ import respx
 
 from argus.config.settings import LogbookSettings
 from argus.core.request_context import caller_token_scope
-from argus.providers.logbook.exceptions import LogbookQueryError, LogbookUnavailableError, LogbookUnconfiguredError
+from argus.providers.logbook.exceptions import (
+    LogbookQueryError,
+    LogbookRefusedError,
+    LogbookUnavailableError,
+    LogbookUnconfiguredError,
+)
 from argus.providers.logbook.logbook import LogbookProvider
 
 
@@ -226,3 +231,37 @@ async def test_a_missing_entry_or_a_bad_id_is_a_clear_error():
         await _configured().get_entry("42")
     with pytest.raises(LogbookQueryError, match="Not a logbook entry id"):
         await _configured().get_entry("QF12")
+
+
+
+@respx.mock
+async def test_an_invalid_logbook_name_comes_back_as_ologs_reason_with_the_valid_names():
+    # What SPARC's Olog answered when a model guessed "Operations" (2026-10-27).
+    respx.put("http://olog.test/Olog/logs").mock(
+        return_value=httpx.Response(
+            400, json={"status": 400, "error": "Bad Request", "message": "One or more invalid logbook name(s)"}
+        )
+    )
+    names = respx.get("http://olog.test/Olog/logbooks").mock(
+        return_value=httpx.Response(200, json=[{"name": "SPARC-Shift"}, {"name": "Linac"}, {"owner": "x"}])
+    )
+    with caller_token_scope("eyJuser"):
+        with pytest.raises(LogbookRefusedError) as raised:
+            await _configured().create_entry("t", "x", ["Operations"])
+    message = str(raised.value)
+    assert "Olog refused to create the entry (HTTP 400): One or more invalid logbook name(s)" in message
+    assert "Valid logbooks here: Linac, SPARC-Shift." in message
+    assert "unreachable" not in message
+    # The names are read as the same user.
+    assert names.calls.last.request.headers["authorization"] == "Bearer eyJuser"
+
+
+@respx.mock
+async def test_a_forbidden_write_says_so_and_a_server_error_is_still_unavailable():
+    route = respx.put("http://olog.test/Olog/logs")
+    route.mock(return_value=httpx.Response(403, json={"message": "Forbidden"}))
+    with pytest.raises(LogbookRefusedError, match="HTTP 403.*may not do this in Olog"):
+        await _configured().create_entry("t", "x", ["Linac"])
+    route.mock(return_value=httpx.Response(503, text="down"))
+    with pytest.raises(LogbookUnavailableError):
+        await _configured().create_entry("t", "x", ["Linac"])

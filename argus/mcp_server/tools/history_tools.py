@@ -34,7 +34,9 @@ _CREATE_LOGBOOK_ENTRY_SCHEMA = {
         "logbooks": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Which logbook(s) to post to, e.g. ['Operations']. At least one required.",
+            "description": "Which logbook(s) to post to - existing logbook names of this facility's Olog, "
+            "which differ between facilities (don't assume 'Operations'). At least one required. If a name "
+            "is wrong, the error lists the valid ones.",
         },
         "tags": {
             "type": "array",
