@@ -81,6 +81,16 @@ async def _machine_summary(arguments: dict[str, Any], ctx: AppContext) -> dict[s
     return dataclasses.asdict(summary)
 
 
+def _describe_restart_ioc(arguments: dict[str, Any]) -> str:
+    where = f" in namespace {arguments['namespace']}" if arguments.get("namespace") else ""
+    return f"Restart the IOC pod {arguments.get('pod_name')}{where} (its PVs go offline until it is back)."
+
+
+def _describe_procedure(arguments: dict[str, Any]) -> str:
+    params = f" with parameters {arguments['params']}" if arguments.get("params") else ""
+    return f"Run the operational procedure {arguments.get('name')!r}{params}."
+
+
 TOOLS = [
     ToolDefinition(
         name="search_pvs",
@@ -107,6 +117,8 @@ TOOLS = [
         description="Restart an IOC's pod.",
         input_schema=_RESTART_IOC_SCHEMA,
         handler=_restart_ioc,
+        writes=True,
+        describe=_describe_restart_ioc,
     ),
     ToolDefinition(
         name="machine_summary",
@@ -119,5 +131,7 @@ TOOLS = [
         description="Run a named, pre-approved operational procedure.",
         input_schema=_EXECUTE_PROCEDURE_SCHEMA,
         handler=_execute_procedure,
+        writes=True,
+        describe=_describe_procedure,
     ),
 ]

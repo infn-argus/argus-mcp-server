@@ -16,8 +16,13 @@ from argus.__about__ import __version__
 from argus.config.logging import configure_logging
 from argus.config.settings import Settings
 from argus.core.context import AppContext
-from argus.core.request_context import caller_token_scope
-from argus.mcp_server.correlation import current_http_request, extract_caller_token, extract_correlation_headers
+from argus.core.request_context import caller_token_scope, confirm_writes_scope
+from argus.mcp_server.correlation import (
+    current_http_request,
+    extract_caller_token,
+    extract_confirm_writes,
+    extract_correlation_headers,
+)
 from argus.mcp_server.tools import beamline_tools
 from argus.mcp_server.tools.device_tools import TOOLS as DEVICE_TOOLS
 from argus.mcp_server.tools.docs_tools import TOOLS as DOCS_TOOLS
@@ -61,13 +66,13 @@ def build_mcp_server(registry: ToolRegistry, ctx: AppContext) -> Server:
 
     @server.list_tools()
     async def handle_list_tools() -> list[Tool]:
-        return registry.list_tools()
+        return registry.list_tools(confirm_writes=extract_confirm_writes(current_http_request(server)))
 
     @server.call_tool()
     async def handle_call_tool(name: str, arguments: dict) -> Sequence[TextContent]:
         request = current_http_request(server)
         correlation = extract_correlation_headers(request)
-        with caller_token_scope(extract_caller_token(request)):
+        with caller_token_scope(extract_caller_token(request)), confirm_writes_scope(extract_confirm_writes(request)):
             return await registry.dispatch(name, arguments or {}, ctx, correlation=correlation)
 
     return server

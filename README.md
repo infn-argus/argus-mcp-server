@@ -73,7 +73,9 @@ input schemas, enforced by
 | `beamline_status` | Aggregate status across a group of devices |
 | `get_history` | Historical trend data for a PV (Archiver Appliance) |
 | `get_alarm_history` | Recent alarm-tagged logbook entries for a device |
-| `create_logbook_entry` | Post a new entry to the operations logbook |
+| `create_logbook_entry` | Post a new entry to the operations logbook (as the signed-in user, when their token is forwarded) |
+| `get_logbook_entry` | Read one logbook entry straight from Olog, by id or hub code (`OLOG-SPARC-1234`) |
+| `update_logbook_entry` | Change an existing logbook entry (as the signed-in user); Olog keeps the old version |
 | `get_logs` | Search historical application/IOC logs (Elasticsearch) |
 | `list_iocs` | List IOCs and their Kubernetes pod status |
 | `restart_ioc` | Restart an IOC's pod |
@@ -109,6 +111,20 @@ workspace; a token with only `read` reads the workspaces its owner holds a
 role in. Tool names and result shapes are the same either way, so a
 YAML-backed and a hub-backed server can answer the same question side by
 side — see [ADR 0004](docs/adr/0004-knowledge-hub-as-alternative-source.md).
+
+## Confirmed writes
+
+Write tools (`set_pv`, `set_pv_value`, `restart_ioc`, `execute_procedure`,
+`create_logbook_entry`, `update_logbook_entry`) can be confirmed in two
+steps, for clients that send `X-Argus-Confirm-Writes: true` (LibreChat's
+registrations do; it has no approval step of its own). The first call
+changes nothing: it returns `confirmation_required`, a plain-language
+preview, and a one-time `confirmation_id`. Only the same call repeated with
+that id, by the same user, within 10 minutes, runs. Clients without the
+header (the voice agent, which has its own operator confirmation) are
+unaffected, and their tool schemas are unchanged. See
+`argus/mcp_server/confirmation.py` for what this does and doesn't
+guarantee.
 
 ## Development
 

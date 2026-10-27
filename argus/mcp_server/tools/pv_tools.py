@@ -102,6 +102,11 @@ async def _get_pv_info(arguments: dict[str, Any], ctx: AppContext) -> dict[str, 
     return {"info": vars(info)}
 
 
+def _describe_set_pv(arguments: dict[str, Any]) -> str:
+    value = arguments.get("value", arguments.get("pv_value"))
+    return f"Write {value!r} to PV {arguments.get('pv_name')} (a live change to the machine)."
+
+
 TOOLS = [
     ToolDefinition(
         name="get_pv",
@@ -114,6 +119,8 @@ TOOLS = [
         description="Set the value of a PV.",
         input_schema=_SET_PV_SCHEMA,
         handler=_set_pv,
+        writes=True,
+        describe=_describe_set_pv,
     ),
     ToolDefinition(
         name="get_pv_info",
@@ -134,5 +141,7 @@ TOOLS = [
         description="Set the value of a specific PV.",
         input_schema=_LEGACY_SET_PV_SCHEMA,
         handler=_set_pv_value_legacy,
+        writes=True,
+        describe=_describe_set_pv,
     ),
 ]

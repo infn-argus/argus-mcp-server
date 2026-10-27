@@ -38,6 +38,13 @@ _HEADER_TO_FIELD = {
 CALLER_TOKEN_HEADER = "x-argus-user-token"
 
 
+# A client asking for write tools to be confirmed in two steps
+# (mcp_server/confirmation.py). Static per registration, set by whoever
+# configured the client - LibreChat's mcpServers entries in epik8s-platform -
+# so the model can't turn it off. "true"/"1"/"yes" enable it.
+CONFIRM_WRITES_HEADER = "x-argus-confirm-writes"
+
+
 def current_http_request(server: Server) -> Any | None:
     """The raw Starlette Request for the MCP call currently being handled, or
     None outside of an HTTP-transported call (stdio, or outside a request
@@ -81,3 +88,10 @@ def extract_caller_token(request: Any | None) -> str | None:
     if not value or "{{" in value:
         return None
     return value
+
+
+def extract_confirm_writes(request: Any | None) -> bool:
+    headers = getattr(request, "headers", None) if request is not None else None
+    if headers is None:
+        return False
+    return (headers.get(CONFIRM_WRITES_HEADER) or "").strip().lower() in ("true", "1", "yes")

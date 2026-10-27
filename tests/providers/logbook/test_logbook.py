@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -6,7 +7,7 @@ import respx
 
 from argus.config.settings import LogbookSettings
 from argus.core.request_context import caller_token_scope
-from argus.providers.logbook.exceptions import LogbookUnavailableError, LogbookUnconfiguredError
+from argus.providers.logbook.exceptions import LogbookQueryError, LogbookUnavailableError, LogbookUnconfiguredError
 from argus.providers.logbook.logbook import LogbookProvider
 
 
@@ -184,3 +185,44 @@ async def test_an_entry_created_with_a_caller_token_is_created_as_that_person():
         entry = await _configured().create_entry("t", "x", ["Operations"])
     assert route.calls.last.request.headers["authorization"] == "Bearer eyJuser"
     assert entry.author == "jdoe"
+
+
+@respx.mock
+async def test_get_entry_accepts_an_olog_id_or_the_hubs_code():
+    respx.get("http://olog.test/Olog/logs/1234").mock(
+        return_value=httpx.Response(200, json={"id": 1234, "title": "QF12 tripped", "description": "x", "owner": "jdoe"})
+    )
+    for entry_id in ("1234", 1234, "OLOG-SPARC-1234"):
+        entry = await _configured().get_entry(entry_id)
+        assert entry.id == "1234" and entry.title == "QF12 tripped"
+
+
+@respx.mock
+async def test_update_entry_changes_only_the_given_fields_and_keeps_the_rest():
+    current = {
+        "id": 1234, "title": "old", "description": "old text", "source": "old text", "owner": "jdoe",
+        "logbooks": [{"name": "Operations"}], "tags": [{"name": "alarm"}],
+        "attachments": [{"id": "a1", "filename": "plot.png"}], "properties": [{"name": "Shift", "attributes": []}],
+    }
+    respx.get("http://olog.test/Olog/logs/1234").mock(return_value=httpx.Response(200, json=current))
+    post = respx.post("http://olog.test/Olog/logs/1234").mock(
+        return_value=httpx.Response(200, json={**current, "description": "new text", "title": "old"})
+    )
+    with caller_token_scope("eyJuser"):
+        entry = await _configured().update_entry("OLOG-SPARC-1234", text="new text")
+
+    sent = json.loads(post.calls.last.request.content)
+    assert sent["description"] == "new text" and sent["source"] == "new text"
+    assert sent["title"] == "old" and sent["tags"] == [{"name": "alarm"}]
+    assert sent["attachments"] == current["attachments"] and sent["properties"] == current["properties"]
+    assert post.calls.last.request.headers["authorization"] == "Bearer eyJuser"
+    assert entry.text == "new text"
+
+
+@respx.mock
+async def test_a_missing_entry_or_a_bad_id_is_a_clear_error():
+    respx.get("http://olog.test/Olog/logs/42").mock(return_value=httpx.Response(404))
+    with pytest.raises(LogbookQueryError, match="No logbook entry 42"):
+        await _configured().get_entry("42")
+    with pytest.raises(LogbookQueryError, match="Not a logbook entry id"):
+        await _configured().get_entry("QF12")
