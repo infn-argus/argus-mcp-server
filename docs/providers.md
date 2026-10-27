@@ -53,7 +53,13 @@ method on an unconfigured provider raises that provider's
   as that person, so reads follow their permissions and entries are theirs.
   Olog must trust the same issuer (`oauth2.issueUri`). Without a token, the
   configured `LOGBOOK_USERNAME`/`LOGBOOK_PASSWORD` is used. The token lives
-  in its own context variable and is never written to a log.
+  in its own context variable and is never written to a log. The same goes
+  for `update_logbook_entry` (Olog's `POST /Olog/logs/{id}`: the current
+  record is read first and only the given fields change, so attachments
+  and properties survive; Olog archives the previous version). On a
+  Knowledge Hub server, logbook *reads* stay on the hub's documents, while
+  reading one entry to change it and changing it go to Olog
+  (`LOGBOOK_BASE_URL`).
 - **The ARGUS Knowledge Hub is an alternative source** for the device
   inventory (`INVENTORY_BACKEND`), documentation (`DOCUMENTATION_BACKEND`)
   and logbook reads (`LOGBOOK_BACKEND`), all through one MCP client — see

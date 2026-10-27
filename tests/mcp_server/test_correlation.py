@@ -1,4 +1,9 @@
-from argus.mcp_server.correlation import current_http_request, extract_caller_token, extract_correlation_headers
+from argus.mcp_server.correlation import (
+    current_http_request,
+    extract_caller_token,
+    extract_confirm_writes,
+    extract_correlation_headers,
+)
 
 
 class _FakeRequest:
@@ -88,3 +93,11 @@ def test_no_header_an_empty_one_or_an_unresolved_placeholder_is_no_token():
 def test_the_caller_token_is_not_a_correlation_field():
     # Correlation fields are bound to every log line; a credential must never be.
     assert extract_correlation_headers(_FakeRequest({"x-argus-user-token": "eyJabc"})) == {}
+
+
+def test_confirm_writes_is_opt_in_by_header():
+    assert extract_confirm_writes(_FakeRequest({"x-argus-confirm-writes": "true"})) is True
+    assert extract_confirm_writes(_FakeRequest({"x-argus-confirm-writes": "1"})) is True
+    assert extract_confirm_writes(_FakeRequest({})) is False
+    assert extract_confirm_writes(_FakeRequest({"x-argus-confirm-writes": "no"})) is False
+    assert extract_confirm_writes(None) is False

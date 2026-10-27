@@ -14,6 +14,7 @@ configured account (LOGBOOK_USERNAME/LOGBOOK_PASSWORD), if any, is used.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import ClassVar
 
@@ -145,6 +146,83 @@ class LogbookProvider:
             raise LogbookUnavailableError(f"Logbook unreachable: {exc}") from exc
 
         return _to_entry(payload)
+
+    async def _get_raw(self, client: httpx.AsyncClient, olog_id: str) -> dict:
+        resp = await client.get(f"{self._settings.base_url}/Olog/logs/{olog_id}")
+        if resp.status_code == 404:
+            raise LogbookQueryError(f"No logbook entry {olog_id}.")
+        resp.raise_for_status()
+        return resp.json()
+
+    async def get_entry(self, entry_id: str | int, *, timeout: float = 5.0) -> LogbookEntry:
+        """One entry, read straight from Olog - e.g. before changing it."""
+        self._require_configured()
+        olog_id = olog_entry_id(entry_id)
+        try:
+            async with self._client(timeout) as client:
+                payload = await self._get_raw(client, olog_id)
+        except httpx.TimeoutException as exc:
+            raise LogbookTimeoutError(f"Timeout reading logbook entry {olog_id}") from exc
+        except httpx.HTTPError as exc:
+            raise LogbookUnavailableError(f"Logbook unreachable: {exc}") from exc
+        return _to_entry(payload)
+
+    async def update_entry(
+        self,
+        entry_id: str | int,
+        *,
+        title: str | None = None,
+        text: str | None = None,
+        logbooks: list[str] | None = None,
+        tags: list[str] | None = None,
+        timeout: float = 5.0,
+    ) -> LogbookEntry:
+        """Change an existing entry. Olog keeps the previous version as history.
+
+        Olog's update replaces the whole record (POST /Olog/logs/{id}), so the
+        current one is read first and only the given fields change - its
+        attachments, properties and anything else ARGUS doesn't model are sent
+        back untouched. Olog checks that the caller may write to every logbook
+        involved, so with a forwarded user token this is that person's edit.
+        """
+        self._require_configured()
+        olog_id = olog_entry_id(entry_id)
+        try:
+            async with self._client(timeout) as client:
+                record = await self._get_raw(client, olog_id)
+                if title is not None:
+                    record["title"] = title
+                if text is not None:
+                    record["description"] = text
+                    if "source" in record:
+                        record["source"] = text
+                if logbooks is not None:
+                    record["logbooks"] = [{"name": lb} for lb in logbooks]
+                if tags is not None:
+                    record["tags"] = [{"name": t} for t in tags]
+                resp = await client.post(f"{self._settings.base_url}/Olog/logs/{olog_id}", json=record)
+                resp.raise_for_status()
+                payload = resp.json()
+        except httpx.TimeoutException as exc:
+            raise LogbookTimeoutError(f"Timeout updating logbook entry {olog_id}") from exc
+        except httpx.HTTPError as exc:
+            raise LogbookUnavailableError(f"Logbook refused or unreachable updating entry {olog_id}: {exc}") from exc
+        return _to_entry(payload)
+
+
+# A bare Olog id, or the Knowledge Hub's code for that entry: OLOG-<FACILITY>-<id>,
+# with a workspace suffix when two workspaces share a facility (olog_logbook.py).
+# Strict on purpose: a device name like "QF12" must not become entry 12.
+_OLOG_ID = re.compile(r"^(?:OLOG-[A-Za-z0-9_]+-)?(\d+)(?:-[A-Za-z0-9-]+)?$", re.IGNORECASE)
+
+
+def olog_entry_id(entry_id: str | int) -> str:
+    """Olog's numeric id from "1234", 1234, or the Knowledge Hub's code for that entry ("OLOG-SPARC-1234")."""
+    text = str(entry_id).strip()
+    match = _OLOG_ID.match(text)
+    if not text or match is None or (not text.isdigit() and not text.upper().startswith("OLOG-")):
+        raise LogbookQueryError(f"Not a logbook entry id: {entry_id!r} (expected e.g. 1234 or OLOG-SPARC-1234).")
+    return match.group(1)
 
 
 def _olog_timestamp(when: datetime) -> str:

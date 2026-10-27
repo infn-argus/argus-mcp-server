@@ -66,3 +66,17 @@ class HistoryService:
         self, title: str, text: str, logbooks: list[str], tags: list[str] | None = None
     ) -> LogbookEntry:
         return await self._logbook.create_entry(title, text, logbooks, tags=tags)
+
+    async def get_logbook_entry(self, entry_id: str | int) -> LogbookEntry:
+        return await self._logbook.get_entry(entry_id)
+
+    async def update_logbook_entry(
+        self,
+        entry_id: str | int,
+        *,
+        title: str | None = None,
+        text: str | None = None,
+        logbooks: list[str] | None = None,
+        tags: list[str] | None = None,
+    ) -> LogbookEntry:
+        return await self._logbook.update_entry(entry_id, title=title, text=text, logbooks=logbooks, tags=tags)

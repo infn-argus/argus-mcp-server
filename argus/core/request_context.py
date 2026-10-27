@@ -19,6 +19,12 @@ request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 # logbook) read it with current_caller_token().
 _caller_token_var: ContextVar[str | None] = ContextVar("caller_token", default=None)
 
+# Whether the client behind the current call wants write tools confirmed in
+# two steps (see mcp_server/confirmation.py). Set per call from the
+# X-Argus-Confirm-Writes header - LibreChat's registrations send it, the
+# voice agent (which has its own operator confirmation) doesn't.
+_confirm_writes_var: ContextVar[bool] = ContextVar("confirm_writes", default=False)
+
 
 def new_request_id() -> str:
     return uuid.uuid4().hex[:12]
@@ -38,6 +44,20 @@ def caller_token_scope(token: str | None) -> Iterator[None]:
         yield
     finally:
         _caller_token_var.reset(reset)
+
+
+def writes_need_confirmation() -> bool:
+    """Whether write tools must be confirmed in two steps for this call."""
+    return _confirm_writes_var.get()
+
+
+@contextmanager
+def confirm_writes_scope(enabled: bool) -> Iterator[None]:
+    reset = _confirm_writes_var.set(bool(enabled))
+    try:
+        yield
+    finally:
+        _confirm_writes_var.reset(reset)
 
 
 @contextmanager

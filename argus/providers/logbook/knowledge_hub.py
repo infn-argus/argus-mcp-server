@@ -130,6 +130,22 @@ class KnowledgeHubLogbookProvider:
             )
         return await self._writer.create_entry(title, text, logbooks, tags=tags, timeout=timeout)
 
+    def _olog(self) -> LogbookProvider:
+        if self._writer is None or not self._writer.is_configured():
+            raise LogbookUnconfiguredError(
+                "Reading or changing an Olog entry needs Olog (set LOGBOOK_BASE_URL); the Knowledge Hub "
+                "keeps the logbook as read-only documents."
+            )
+        return self._writer
+
+    async def get_entry(self, entry_id: str | int, *, timeout: float = 5.0) -> LogbookEntry:
+        # Straight from Olog: the current text, before changing it. The hub's
+        # copy lags behind by up to a day (its upload job runs daily).
+        return await self._olog().get_entry(entry_id, timeout=timeout)
+
+    async def update_entry(self, entry_id: str | int, **changes: object) -> LogbookEntry:
+        return await self._olog().update_entry(entry_id, **changes)  # type: ignore[arg-type]
+
 
 def _olog_number(document: dict[str, Any]) -> int:
     match = _CODE_NUMBER.search(str(document.get("code") or ""))

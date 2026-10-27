@@ -112,5 +112,9 @@ async def test_tool_count_is_within_high_level_target_band():
     # backend and from diagnose_device's single-device pod_logs leg; a
     # cross-pod/cross-namespace search needs its own tool). All real, distinct
     # capabilities, not scope creep, so the band is widened deliberately
-    # rather than silently upped.
-    assert 15 <= len(registry.list_tools()) <= 25
+    # rather than silently upped. +2 more (27): get_logbook_entry and
+    # update_logbook_entry - changing an existing Olog entry as the signed-in
+    # user means reading that one entry first and then writing it back; neither
+    # fits create_logbook_entry (new entries only) or get_alarm_history (a
+    # filtered list).
+    assert 15 <= len(registry.list_tools()) <= 27

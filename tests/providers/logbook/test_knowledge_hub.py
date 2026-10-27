@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import httpx
+
 import pytest
 import respx
 
@@ -86,3 +88,19 @@ async def test_posting_is_delegated_to_olog_or_refused_clearly():
     provider = KnowledgeHubLogbookProvider(hub_client(), writer=LogbookProvider(LogbookSettings(_env_file=None)))
     with pytest.raises(LogbookUnconfiguredError, match="read-only"):
         await provider.create_entry("t", "x", ["Operations"])
+
+
+
+@respx.mock
+async def test_reading_one_entry_to_change_it_goes_to_olog_and_needs_it():
+    respx.get("http://olog.test/Olog/logs/1234").mock(
+        return_value=httpx.Response(200, json={"id": 1234, "title": "QF12", "description": "x"})
+    )
+    with_olog = KnowledgeHubLogbookProvider(
+        hub_client(), writer=LogbookProvider(LogbookSettings(_env_file=None, LOGBOOK_BASE_URL="http://olog.test"))
+    )
+    assert (await with_olog.get_entry("OLOG-BTF-1234")).title == "QF12"
+
+    without_olog = KnowledgeHubLogbookProvider(hub_client(), writer=LogbookProvider(LogbookSettings(_env_file=None)))
+    with pytest.raises(LogbookUnconfiguredError, match="needs Olog"):
+        await without_olog.update_entry("OLOG-BTF-1234", text="y")
