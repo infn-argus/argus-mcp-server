@@ -46,6 +46,14 @@ method on an unconfigured provider raises that provider's
 
 ## Notes
 
+- **The Olog logbook can act as the caller.** When a tool call carries the
+  caller's identity-provider access token in `X-Argus-User-Token` (LibreChat
+  fills it from `{{LIBRECHAT_OPENID_ACCESS_TOKEN}}`, which needs
+  `OPENID_REUSE_TOKENS=true`), Olog is called with `Authorization: Bearer`
+  as that person, so reads follow their permissions and entries are theirs.
+  Olog must trust the same issuer (`oauth2.issueUri`). Without a token, the
+  configured `LOGBOOK_USERNAME`/`LOGBOOK_PASSWORD` is used. The token lives
+  in its own context variable and is never written to a log.
 - **The ARGUS Knowledge Hub is an alternative source** for the device
   inventory (`INVENTORY_BACKEND`), documentation (`DOCUMENTATION_BACKEND`)
   and logbook reads (`LOGBOOK_BACKEND`), all through one MCP client — see

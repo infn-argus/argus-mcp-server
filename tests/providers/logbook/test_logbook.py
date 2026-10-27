@@ -5,6 +5,7 @@ import pytest
 import respx
 
 from argus.config.settings import LogbookSettings
+from argus.core.request_context import caller_token_scope
 from argus.providers.logbook.exceptions import LogbookUnavailableError, LogbookUnconfiguredError
 from argus.providers.logbook.logbook import LogbookProvider
 
@@ -150,3 +151,36 @@ async def test_create_entry_unreachable_raises_unavailable():
     respx.put("http://olog.test/Olog/logs").mock(side_effect=httpx.ConnectError("refused"))
     with pytest.raises(LogbookUnavailableError):
         await provider.create_entry("title", "text", ["operations"])
+
+
+@respx.mock
+async def test_with_a_caller_token_olog_is_called_as_that_person():
+    provider = LogbookProvider(
+        LogbookSettings(_env_file=None, LOGBOOK_BASE_URL="http://olog.test", LOGBOOK_USERNAME="epics", LOGBOOK_PASSWORD="pw")
+    )
+    route = respx.get("http://olog.test/Olog/logs").mock(return_value=httpx.Response(200, json=[]))
+    with caller_token_scope("eyJuser"):
+        await provider.search_entries(text="QF12")
+    # The person's token, and not the configured account alongside it.
+    assert route.calls.last.request.headers["authorization"] == "Bearer eyJuser"
+
+
+@respx.mock
+async def test_without_a_caller_token_the_configured_account_is_used():
+    provider = LogbookProvider(
+        LogbookSettings(_env_file=None, LOGBOOK_BASE_URL="http://olog.test", LOGBOOK_USERNAME="epics", LOGBOOK_PASSWORD="pw")
+    )
+    route = respx.get("http://olog.test/Olog/logs").mock(return_value=httpx.Response(200, json=[]))
+    await provider.search_entries(text="QF12")
+    assert route.calls.last.request.headers["authorization"].startswith("Basic ")
+
+
+@respx.mock
+async def test_an_entry_created_with_a_caller_token_is_created_as_that_person():
+    route = respx.put("http://olog.test/Olog/logs").mock(
+        return_value=httpx.Response(200, json={"id": 7, "title": "t", "description": "x", "owner": "jdoe"})
+    )
+    with caller_token_scope("eyJuser"):
+        entry = await _configured().create_entry("t", "x", ["Operations"])
+    assert route.calls.last.request.headers["authorization"] == "Bearer eyJuser"
+    assert entry.author == "jdoe"

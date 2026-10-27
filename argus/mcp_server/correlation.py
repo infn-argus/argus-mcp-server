@@ -28,6 +28,16 @@ _HEADER_TO_FIELD = {
 }
 
 
+# The calling person's identity-provider access token, forwarded by their
+# client so that providers able to act as that person (the Olog logbook) do.
+# LibreChat fills it per tool call from a header template such as
+#   X-Argus-User-Token: "{{LIBRECHAT_OPENID_ACCESS_TOKEN}}"
+# (epik8s-platform: argusMcpInstances[].forwardUserToken). A dedicated header,
+# not Authorization: ARGUS itself doesn't authenticate MCP callers - this is a
+# credential to pass on, not one to check.
+CALLER_TOKEN_HEADER = "x-argus-user-token"
+
+
 def current_http_request(server: Server) -> Any | None:
     """The raw Starlette Request for the MCP call currently being handled, or
     None outside of an HTTP-transported call (stdio, or outside a request
@@ -50,3 +60,24 @@ def extract_correlation_headers(request: Any | None) -> dict[str, str]:
         if value:
             result[field] = value
     return result
+
+
+def extract_caller_token(request: Any | None) -> str | None:
+    """The caller's forwarded access token, or None.
+
+    LibreChat leaves a header template as-is when it has nothing to put in it
+    (e.g. a user who didn't sign in with OpenID, or OPENID_REUSE_TOKENS off),
+    so an unresolved "{{...}}" placeholder counts as no token, as does an
+    empty value. A leading "Bearer " is accepted and dropped.
+    """
+    if request is None:
+        return None
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return None
+    value = (headers.get(CALLER_TOKEN_HEADER) or "").strip()
+    if value.lower().startswith("bearer "):
+        value = value[7:].strip()
+    if not value or "{{" in value:
+        return None
+    return value
