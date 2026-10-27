@@ -13,3 +13,6 @@ class LogbookEntry:
     tags: list[str] = field(default_factory=list)
     created_at: datetime | None = None
     author: str | None = None
+    # A link to the entry's page, when the source has one (the Knowledge
+    # Hub's ready-made Markdown link); None from Olog.
+    url: str | None = None

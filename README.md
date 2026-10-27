@@ -80,11 +80,35 @@ input schemas, enforced by
 | `machine_summary` | Machine-wide IOC health + recent alarm counts |
 | `execute_procedure` | Run a named, pre-approved operational procedure (scaffolded; no procedures ship yet — see [ADR context](docs/adr/)) |
 | `search_documentation` | Search technical documentation (local TF-IDF by default, or RAGFLOW — see [providers.md](docs/providers.md)) |
-| `list_beamline_devices` | Structured device inventory (IOCs, zones, devgroup/devfunc) parsed from a beamline's deploy YAML |
+| `list_beamline_devices` | Structured device inventory (IOCs, zones, devgroup/devfunc) parsed from a beamline's deploy YAML, or read from the ARGUS Knowledge Hub |
+| `list_knowledge_hub_workspaces` | The ARGUS Knowledge Hub workspaces this server reads from (only when the hub is configured) |
 | `get_config_history` | Read a beamline config file's current content, git history, or a commit's diff (GitHub/GitLab) |
 | `search_knowledge_base` | Search issues/tickets across configured repos for past problems and resolutions (GitHub/GitLab) |
 | `search_snapshots` | Search/browse Phoebus save-and-restore configurations and snapshots (read-only) |
 | `get_snapshot` | Read a save-and-restore configuration's PV list, or a snapshot's saved values (read-only) |
+
+## Knowledge source: legacy YAML/RAG/Olog, or the ARGUS Knowledge Hub
+
+The device inventory, documentation and logbook reads can each come from
+the [ARGUS Knowledge Hub](https://infn-argus.github.io/argus-knowledge-hub/)
+MCP server instead of the beamline's deploy YAML, a RAG and Olog:
+
+```bash
+INVENTORY_BACKEND=knowledge_hub
+DOCUMENTATION_BACKEND=knowledge_hub
+LOGBOOK_BACKEND=knowledge_hub
+KNOWLEDGE_HUB_URL=https://argus-hub-api.example.org/mcp
+KNOWLEDGE_HUB_TOKEN=argus_pat_...     # see below
+KNOWLEDGE_HUB_WORKSPACES=btf         # blank = every workspace the token may read
+```
+
+The token is a personal access token made in the hub (*My account →
+Personal access tokens*). To read **every** workspace, an administrator
+makes it with the `read` and `admin` scopes and without fixing it to a
+workspace; a token with only `read` reads the workspaces its owner holds a
+role in. Tool names and result shapes are the same either way, so a
+YAML-backed and a hub-backed server can answer the same question side by
+side — see [ADR 0004](docs/adr/0004-knowledge-hub-as-alternative-source.md).
 
 ## Development
 

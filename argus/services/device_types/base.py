@@ -39,6 +39,13 @@ class DeviceTypeProfile:
         return self.devfunc_fallback
 
     def key_pvs(self, iocprefix: str, device_name: str) -> dict[str, str]:
-        if not iocprefix or not self.key_pv_suffixes:
+        if not iocprefix:
             return {}
-        return {role: f"{iocprefix}:{device_name}:{suffix}" for role, suffix in self.key_pv_suffixes.items()}
+        return self.key_pvs_for_prefix(f"{iocprefix}:{device_name}")
+
+    def key_pvs_for_prefix(self, pv_prefix: str | None) -> dict[str, str]:
+        """Key PVs from a device's full PV prefix, for sources (the Knowledge
+        Hub) that store the composed prefix rather than iocprefix + name."""
+        if not pv_prefix or not self.key_pv_suffixes:
+            return {}
+        return {role: f"{pv_prefix}:{suffix}" for role, suffix in self.key_pv_suffixes.items()}

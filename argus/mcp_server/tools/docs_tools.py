@@ -32,7 +32,10 @@ async def _search_documentation(arguments: dict[str, Any], ctx: AppContext) -> d
 TOOLS = [
     ToolDefinition(
         name="search_documentation",
-        description="Search technical documentation and manuals.",
+        description=(
+            "Search technical documentation and manuals. When a result's source_path is a Markdown link, "
+            "cite it by writing that link exactly as given."
+        ),
         input_schema=_SEARCH_DOCS_SCHEMA,
         handler=_search_documentation,
     ),
