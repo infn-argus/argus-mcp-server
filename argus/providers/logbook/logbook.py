@@ -25,6 +25,7 @@ from argus.core.request_context import current_caller_token
 from argus.providers.base import ProviderHealth, ProviderStatus
 from argus.providers.logbook.exceptions import (
     LogbookQueryError,
+    LogbookRefusedError,
     LogbookTimeoutError,
     LogbookUnavailableError,
     LogbookUnconfiguredError,
@@ -52,6 +53,33 @@ class LogbookProvider:
         if token:
             return httpx.AsyncClient(timeout=timeout, headers={"Authorization": f"Bearer {token}"})
         return httpx.AsyncClient(timeout=timeout, auth=self._auth())
+
+    async def _refusal(self, exc: httpx.HTTPStatusError, action: str, timeout: float) -> LogbookRefusedError:
+        """Olog's own reason for refusing, with the valid logbook names when a name was the problem."""
+        try:
+            reason = exc.response.json().get("message") or exc.response.text
+        except ValueError:
+            reason = exc.response.text
+        reason = (reason or exc.response.reason_phrase or "").strip()[:300]
+        status = exc.response.status_code
+        message = f"Olog refused to {action} (HTTP {status}): {reason}"
+        if status == 401 or status == 403:
+            message += " - the signed-in user (or ARGUS's configured account) may not do this in Olog."
+        if "logbook" in reason.lower() and "invalid" in reason.lower():
+            names = await self.list_logbooks(timeout=timeout)
+            if names:
+                message += f". Valid logbooks here: {', '.join(names)}."
+        return LogbookRefusedError(message)
+
+    async def list_logbooks(self, *, timeout: float = 5.0) -> list[str]:
+        """The logbook names Olog knows (as the caller); empty if they can't be read."""
+        try:
+            async with self._client(timeout) as client:
+                resp = await client.get(f"{self._settings.base_url}/Olog/logbooks")
+                resp.raise_for_status()
+                return sorted(lb.get("name") for lb in resp.json() if isinstance(lb, dict) and lb.get("name"))
+        except (httpx.HTTPError, ValueError, TypeError):
+            return []
 
     async def health(self) -> ProviderHealth:
         if not self.is_configured():
@@ -116,6 +144,10 @@ class LogbookProvider:
                 payload = resp.json()
         except httpx.TimeoutException as exc:
             raise LogbookTimeoutError("Timeout searching logbook entries") from exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code < 500:
+                raise await self._refusal(exc, "search the logbook", timeout) from exc
+            raise LogbookUnavailableError(f"Logbook error: {exc}") from exc
         except httpx.HTTPError as exc:
             raise LogbookUnavailableError(f"Logbook unreachable: {exc}") from exc
 
@@ -142,6 +174,10 @@ class LogbookProvider:
                 payload = resp.json()
         except httpx.TimeoutException as exc:
             raise LogbookTimeoutError("Timeout creating logbook entry") from exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code < 500:
+                raise await self._refusal(exc, "create the entry", timeout) from exc
+            raise LogbookUnavailableError(f"Logbook error: {exc}") from exc
         except httpx.HTTPError as exc:
             raise LogbookUnavailableError(f"Logbook unreachable: {exc}") from exc
 
@@ -163,6 +199,10 @@ class LogbookProvider:
                 payload = await self._get_raw(client, olog_id)
         except httpx.TimeoutException as exc:
             raise LogbookTimeoutError(f"Timeout reading logbook entry {olog_id}") from exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code < 500:
+                raise await self._refusal(exc, f"read entry {olog_id}", timeout) from exc
+            raise LogbookUnavailableError(f"Logbook error: {exc}") from exc
         except httpx.HTTPError as exc:
             raise LogbookUnavailableError(f"Logbook unreachable: {exc}") from exc
         return _to_entry(payload)
@@ -205,8 +245,12 @@ class LogbookProvider:
                 payload = resp.json()
         except httpx.TimeoutException as exc:
             raise LogbookTimeoutError(f"Timeout updating logbook entry {olog_id}") from exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code < 500:
+                raise await self._refusal(exc, f"update entry {olog_id}", timeout) from exc
+            raise LogbookUnavailableError(f"Logbook error: {exc}") from exc
         except httpx.HTTPError as exc:
-            raise LogbookUnavailableError(f"Logbook refused or unreachable updating entry {olog_id}: {exc}") from exc
+            raise LogbookUnavailableError(f"Logbook unreachable: {exc}") from exc
         return _to_entry(payload)
 
 
