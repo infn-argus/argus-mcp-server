@@ -14,6 +14,7 @@ from argus.providers.channelfinder.channelfinder import ChannelFinderProvider
 from argus.providers.channelfinder.exceptions import ChannelFinderError
 from argus.providers.channelfinder.models import CFChannel
 from argus.providers.epics.exceptions import EpicsError
+from argus.providers.epics.fallback import FallbackEpicsProvider
 from argus.providers.epics.interface import EpicsProvider
 from argus.providers.epics.models import PVInfo, PVValue, PVWriteResult
 from argus.providers.kubernetes.exceptions import KubernetesError
@@ -61,54 +62,27 @@ class OperationsService:
         self,
         epics_ca: EpicsProvider,
         epics_pva: EpicsProvider | None = None,
-        protocol_overrides: dict[str, str] | None = None,
         channelfinder: ChannelFinderProvider | None = None,
         kubernetes: KubernetesProvider | None = None,
         logbook: LogbookProvider | None = None,
         procedures: ProcedureRegistry | None = None,
         kubernetes_cache: AsyncTTLCache | None = None,
     ) -> None:
-        self._epics_ca = epics_ca
-        self._epics_pva = epics_pva
-        self._protocol_overrides = protocol_overrides or {}
+        self._epics = FallbackEpicsProvider(primary=epics_pva, secondary=epics_ca)
         self._channelfinder = channelfinder
         self._kubernetes = kubernetes
         self._logbook = logbook
         self._procedures = procedures or ProcedureRegistry()
         self._kubernetes_cache = kubernetes_cache or AsyncTTLCache(ttl=30)
 
-    def _epics_for(self, pv_name: str) -> EpicsProvider:
-        override = self._protocol_overrides.get(pv_name)
-        if override == "pva" and self._epics_pva is not None:
-            return self._epics_pva
-        return self._epics_ca
-
     async def get_pv(self, pv_name: str) -> PVValue:
-        primary = self._epics_for(pv_name)
-        try:
-            return await primary.get(pv_name)
-        except EpicsError:
-            if self._epics_pva is not None and primary is not self._epics_pva and self._epics_pva.is_configured():
-                return await self._epics_pva.get(pv_name)
-            raise
+        return await self._epics.get(pv_name)
 
     async def set_pv(self, pv_name: str, value: Any) -> PVWriteResult:
-        primary = self._epics_for(pv_name)
-        try:
-            return await primary.put(pv_name, value)
-        except EpicsError:
-            if self._epics_pva is not None and primary is not self._epics_pva and self._epics_pva.is_configured():
-                return await self._epics_pva.put(pv_name, value)
-            raise
+        return await self._epics.put(pv_name, value)
 
     async def get_pv_info(self, pv_name: str) -> PVInfo:
-        primary = self._epics_for(pv_name)
-        try:
-            return await primary.info(pv_name)
-        except EpicsError:
-            if self._epics_pva is not None and primary is not self._epics_pva and self._epics_pva.is_configured():
-                return await self._epics_pva.info(pv_name)
-            raise
+        return await self._epics.info(pv_name)
 
     async def search_pvs(self, query: str, limit: int = 50) -> list[CFChannel]:
         if self._channelfinder is None or not self._channelfinder.is_configured():

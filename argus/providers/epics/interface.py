@@ -1,8 +1,7 @@
 """Common protocol implemented by both the Channel Access and pvAccess adapters.
 
-operations_service depends on this Protocol, not on either concrete adapter,
-so it can try Channel Access first and fall back to pvAccess (or vice versa
-per EPICS_PROTOCOL_OVERRIDES) without knowing which one it's talking to.
+Callers depend on this Protocol, not on either concrete adapter. fallback.py
+implements it too, trying pvAccess first and Channel Access if that fails.
 """
 
 from __future__ import annotations
