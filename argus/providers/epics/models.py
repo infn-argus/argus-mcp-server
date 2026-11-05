@@ -26,6 +26,13 @@ class PVInfo:
     precision: int | None = None
     display_limits: tuple[float, float] | None = None
     alarm_limits: tuple[float, float] | None = None
+    # pvAccess only: Channel Access has no equivalent, or host/access instead.
+    description: str | None = None
+    choices: list[str] | None = None  # an enum's states
+    alarm_message: str | None = None
+    control_limits: tuple[float, float] | None = None
+    warning_limits: tuple[float, float] | None = None
+    details: dict[str, Any] | None = None  # the PV's whole pvAccess structure
 
 
 @dataclass

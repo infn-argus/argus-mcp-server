@@ -20,6 +20,7 @@ from argus.providers.documentation.rag import LocalTfidfDocumentationProvider
 from argus.providers.documentation.ragflow import RagflowDocumentationProvider
 from argus.providers.elastic.elasticsearch import ElasticsearchProvider
 from argus.providers.epics.channel_access import ChannelAccessProvider
+from argus.providers.epics.fallback import FallbackEpicsProvider
 from argus.providers.epics.interface import EpicsProvider
 from argus.providers.epics.pvaccess import PvAccessProvider
 from argus.providers.kubernetes.kubernetes import KubernetesProvider
@@ -118,7 +119,7 @@ class AppContext:
         device_service = DeviceService(channelfinder=channelfinder, cache=device_cache)
         diagnostics_service = DiagnosticsService(
             device_service=device_service,
-            epics=epics_ca,
+            epics=FallbackEpicsProvider(primary=epics_pva, secondary=epics_ca),
             archiver=archiver,
             kubernetes=kubernetes,
             argocd=argocd,

@@ -9,6 +9,7 @@ N sequential blocking calls.
 from __future__ import annotations
 
 import os
+from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
 
 from argus.providers.base import ProviderHealth, ProviderStatus
@@ -51,16 +52,33 @@ class ChannelAccessProvider:
                 "EPICS Channel Access is not configured (set EPICS_CA_ADDR_LIST)."
             )
 
+    async def _read(self, pv_name: str, read: Callable[[], Awaitable[Any]], what: str) -> Any:
+        """Run a read; on a timeout drop the channel, and retry once if it was already cached.
+
+        aioca keeps one channel per PV for the life of the process, and one can
+        stay disconnected while new channels to the same server work: seen on
+        btf-argus-hub, hours after a gateway restart, until the process restarted.
+        A timed-out channel is therefore never reused.
+        """
+        from aioca import CANothing
+
+        was_cached = _channel_state(pv_name) is not None
+        for attempt in range(2):
+            try:
+                return await read()
+            except (CANothing, TimeoutError) as exc:
+                if not _is_timeout(exc):
+                    raise EpicsConnectionError(f"Failed to {what} PV '{pv_name}': {exc}") from exc
+                _drop_channel(pv_name)
+                if attempt or not was_cached:
+                    raise EpicsTimeoutError(f"Timeout trying to {what} PV '{pv_name}' over Channel Access") from exc
+        raise AssertionError("unreachable")
+
     async def get(self, pv_name: str, timeout: float = 5.0) -> PVValue:
         self._require_configured()
-        from aioca import FORMAT_TIME, CANothing, caget
+        from aioca import FORMAT_TIME, caget
 
-        try:
-            result = await caget(pv_name, format=FORMAT_TIME, timeout=timeout)
-        except CANothing as exc:
-            raise EpicsConnectionError(f"Failed to get PV '{pv_name}': {exc}") from exc
-        except TimeoutError as exc:
-            raise EpicsTimeoutError(f"Timeout while getting PV '{pv_name}'") from exc
+        result = await self._read(pv_name, lambda: caget(pv_name, format=FORMAT_TIME, timeout=timeout), "get")
 
         return PVValue(
             name=pv_name,
@@ -74,12 +92,19 @@ class ChannelAccessProvider:
         self._require_configured()
         from aioca import CANothing, caput
 
-        try:
-            await caput(pv_name, value, timeout=timeout)
-        except CANothing as exc:
-            raise PVWriteRejectedError(f"Failed to set PV '{pv_name}' to {value!r}: {exc}") from exc
-        except TimeoutError as exc:
-            raise EpicsTimeoutError(f"Timeout while setting PV '{pv_name}'") from exc
+        was_cached = _channel_state(pv_name) is not None
+        for attempt in range(2):
+            try:
+                await caput(pv_name, value, timeout=timeout)
+                break
+            except (CANothing, TimeoutError) as exc:
+                if not _is_timeout(exc):
+                    raise PVWriteRejectedError(f"Failed to set PV '{pv_name}' to {value!r}: {exc}") from exc
+                # Retrying is safe only if the channel never connected: then nothing was sent.
+                never_sent = _channel_state(pv_name) is False
+                _drop_channel(pv_name)
+                if attempt or not was_cached or not never_sent:
+                    raise EpicsTimeoutError(f"Timeout while setting PV '{pv_name}' over Channel Access") from exc
 
         return PVWriteResult(name=pv_name, accepted=True, new_value=value)
 
@@ -87,12 +112,7 @@ class ChannelAccessProvider:
         self._require_configured()
         from aioca import FORMAT_CTRL, CANothing, cainfo, caget
 
-        try:
-            info = await cainfo(pv_name, timeout=timeout)
-        except CANothing as exc:
-            raise EpicsConnectionError(f"Failed to get info for PV '{pv_name}': {exc}") from exc
-        except TimeoutError as exc:
-            raise EpicsTimeoutError(f"Timeout while getting info for PV '{pv_name}'") from exc
+        info = await self._read(pv_name, lambda: cainfo(pv_name, timeout=timeout), "get info for")
 
         native_type = info.datatype_strings[info.datatype] if 0 <= info.datatype < len(info.datatype_strings) else None
         access = f"read={info.read}, write={info.write}"
@@ -129,6 +149,8 @@ class ChannelAccessProvider:
         values: list[PVValue] = []
         for name, result in zip(pv_names, results, strict=True):
             ok = getattr(result, "ok", True)
+            if not ok and _is_timeout(result):
+                _drop_channel(name)  # no retry here: the caller's timeout bounds the whole batch
             values.append(
                 PVValue(
                     name=name,
@@ -139,6 +161,40 @@ class ChannelAccessProvider:
                 )
             )
         return values
+
+
+def _is_timeout(error: Any) -> bool:
+    if isinstance(error, TimeoutError):
+        return True
+    from epicscorelibs.ca import cadef
+
+    return getattr(error, "errorcode", None) in (cadef.ECA_TIMEOUT, cadef.ECA_DISCONN)
+
+
+def _channel_state(pv_name: str) -> bool | None:
+    """Whether aioca's cached channel for this PV is connected; None if none is cached."""
+    from aioca import get_channel_infos
+
+    return next((c.connected for c in get_channel_infos() if c.name == pv_name), None)
+
+
+def _drop_channel(pv_name: str) -> None:
+    """Close this PV's cached channel, so the next read opens a new one.
+
+    aioca's only public way is purge_channel_caches(), which closes every
+    channel and makes reads in progress on them fail, so this reaches into its
+    cache for just the one channel, and purges only if that internal changes.
+    """
+    from aioca import _catools, purge_channel_caches
+
+    try:
+        channels = _catools._Context.get_channel_cache()._ChannelCache__channels  # noqa: SLF001
+    except AttributeError:
+        purge_channel_caches()
+        return
+    channel = channels.pop(pv_name, None)
+    if channel is not None:
+        channel._purge()  # noqa: SLF001
 
 
 def _limits(result: Any, lower_attr: str, upper_attr: str) -> tuple[float, float] | None:

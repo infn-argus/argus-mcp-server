@@ -29,6 +29,7 @@ method on an unconfigured provider raises that provider's
 
 | Provider | Module | Backing library/API | Key env vars | Exceptions |
 |---|---|---|---|---|
+| EPICS, as callers see it | `providers/epics/fallback.py` | pvAccess first, Channel Access if it fails; a write goes over one protocol only | either or both of the two below | same `Epics*` hierarchy |
 | Channel Access | `providers/epics/channel_access.py` | [`aioca`](https://pypi.org/project/aioca/) (async-native CA client) | `EPICS_CA_ADDR_LIST`, `EPICS_CA_AUTO_ADDR_LIST` | `EpicsConnectionError`, `EpicsTimeoutError`, `PVWriteRejectedError` |
 | pvAccess | `providers/epics/pvaccess.py` | [`p4p`](https://pypi.org/project/p4p/) asyncio client | `EPICS_PVA_ADDR_LIST` | same `Epics*` hierarchy |
 | Archiver Appliance | `providers/archiver/archiver_appliance.py` | REST: `/retrieval/data/getData.json` | `ARCHIVER_BASE_URL` | `ArchiverUnavailableError`, `ArchiverQueryError`, `ArchiverTimeoutError` |
