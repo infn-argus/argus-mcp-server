@@ -88,5 +88,54 @@ class ArchiverApplianceProvider:
         return series.samples[-1] if series.samples else None
 
 
+    # --- management: which PVs are archived, and archiving more ------------
+    # The appliance's management BPL (/mgmt/bpl/...), on the same host as retrieval.
+
+    async def pv_status(self, pv_names: list[str], *, timeout: float = 10.0) -> dict[str, str]:
+        """Each PV's archiving status as the appliance words it ("Being archived",
+        "Not being archived", "Initial sampling"...)."""
+        self._require_configured()
+        status: dict[str, str] = {}
+        for chunk in _chunks(pv_names, 50):
+            payload = await self._mgmt("GET", "getPVStatus", params={"pv": ",".join(chunk)}, timeout=timeout)
+            for row in payload if isinstance(payload, list) else []:
+                if isinstance(row, dict) and row.get("pvName"):
+                    status[row["pvName"]] = str(row.get("status") or "unknown")
+        return status
+
+    async def archive_pvs(self, pv_names: list[str], *, timeout: float = 30.0) -> dict[str, str]:
+        """Ask the appliance to archive these PVs (its defaults decide the sampling).
+        Returns each PV's answer, e.g. "Archive request submitted"."""
+        self._require_configured()
+        answers: dict[str, str] = {}
+        for chunk in _chunks(pv_names, 50):
+            payload = await self._mgmt("POST", "archivePV", json=[{"pv": pv} for pv in chunk], timeout=timeout)
+            for row in payload if isinstance(payload, list) else []:
+                if isinstance(row, dict) and row.get("pvName"):
+                    answers[row["pvName"]] = str(row.get("status") or "unknown")
+        return answers
+
+    async def _mgmt(self, method: str, action: str, *, params: dict | None = None, json: object = None,
+                    timeout: float) -> object:
+        url = f"{self._settings.base_url}/mgmt/bpl/{action}"
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.request(method, url, params=params, json=json)
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.TimeoutException as exc:
+            raise ArchiverTimeoutError(f"Timeout calling the Archiver Appliance's {action}") from exc
+        except httpx.HTTPStatusError as exc:
+            raise ArchiverQueryError(
+                f"The Archiver Appliance refused {action} (HTTP {exc.response.status_code}): {exc.response.text[:200]}"
+            ) from exc
+        except (httpx.HTTPError, ValueError) as exc:
+            raise ArchiverUnavailableError(f"Archiver Appliance {action} failed: {exc}") from exc
+
+
+def _chunks(items: list[str], size: int) -> list[list[str]]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
 def _iso(value: datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%S.000Z")

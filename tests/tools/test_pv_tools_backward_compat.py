@@ -122,5 +122,11 @@ async def test_tool_count_is_within_high_level_target_band():
     # now) are distinct operations on distinct nodes. +1 more (30):
     # restore_saverestore_snapshot - writing a snapshot back to the machine,
     # kept apart from the creating tools because it is the one write that is
-    # confirmed for every client.
-    assert 15 <= len(registry.list_tools()) <= 30
+    # confirmed for every client. +4 more (34): magnet sets - check_magnet_file
+    # (read a settings file against the machine), create_magnet_set (a file into
+    # a save-and-restore configuration and snapshot of the file's values),
+    # apply_magnet_set (put supplies at a set, a pretune step, all standby or
+    # all on, in the consoles' order with readback waits: one tool, since these
+    # share the preview and the always-on confirmation) and archive_magnet_pvs
+    # (the Archiver Appliance's management side, a distinct service).
+    assert 15 <= len(registry.list_tools()) <= 34
