@@ -162,9 +162,22 @@ class SaveRestoreProvider:
     async def resolve_folder(self, folder: str, *, timeout: float = 5.0) -> tuple[str, str]:
         """(node id, path) of a folder given as a path ("BTF_CONF/Magnets") or a node id.
 
-        Folders are never created here: a missing one is an error listing
-        what exists at the level where the path stopped matching.
+        Folders are not created here: a missing one is an error listing what
+        exists at the level where the path stopped matching (ensure_folder
+        creates them, when the user asked for it).
         """
+        parent, path, missing, here_names = await self.walk_folder(folder, timeout=timeout)
+        if missing:
+            here = path or "the root"
+            raise SaveRestoreQueryError(
+                f"No folder {missing[0]!r} in {here}. Folders there: {', '.join(here_names) or 'none'}. "
+                "If the user wants it created, ask again with create_folders."
+            )
+        return parent, path
+
+    async def walk_folder(self, folder: str, *, timeout: float = 5.0) -> tuple[str, str, list[str], list[str]]:
+        """How much of a folder path exists: (deepest existing folder's id, its path ("" for the root),
+        the names still missing below it, the folders at the level where it stopped matching)."""
         self._require_configured()
         text = (folder or "").strip()
         if not text or text == "/":
@@ -173,20 +186,41 @@ class SaveRestoreProvider:
             node = await self.get_node(text, timeout=timeout)
             if node.node_type != "FOLDER":
                 raise SaveRestoreQueryError(f"{text} is a {node.node_type}, not a folder.")
-            return node.unique_id, node.name
+            return node.unique_id, node.name, [], []
+        parts = [p for p in text.strip("/").split("/") if p]
         parent, walked = ROOT_FOLDER_ID, []
-        for part in [p for p in text.strip("/").split("/") if p]:
+        for i, part in enumerate(parts):
             children = [c for c in await self.get_children(parent, timeout=timeout) if c.node_type == "FOLDER"]
             match = next((c for c in children if c.name == part), None) or next(
                 (c for c in children if c.name.lower() == part.lower()), None
             )
             if match is None:
-                here = "/" + "/".join(walked) if walked else "the root"
-                names = ", ".join(sorted(c.name for c in children)) or "none"
-                raise SaveRestoreQueryError(f"No folder {part!r} in {here}. Folders there: {names}.")
+                return parent, ("/" + "/".join(walked)) if walked else "", parts[i:], sorted(c.name for c in children)
             parent = match.unique_id
             walked.append(match.name)
-        return parent, "/" + "/".join(walked)
+        return parent, "/" + "/".join(walked), [], []
+
+    async def create_folder(self, parent_id: str, name: str, *, timeout: float = 10.0) -> SnrNode:
+        """A new folder under parent_id, owned by the caller."""
+        self._require_configured()
+        payload = await self._request(
+            "PUT", "/node", params={"parentNodeId": parent_id},
+            json={"name": name, "nodeType": "FOLDER", "description": name}, timeout=timeout,
+        )
+        try:
+            return _to_node(payload)
+        except (KeyError, TypeError) as exc:
+            raise SaveRestoreQueryError(f"Unexpected save-and-restore folder response shape: {exc}") from exc
+
+    async def ensure_folder(self, folder: str, *, timeout: float = 10.0) -> tuple[str, str, list[str]]:
+        """(id, path, the folders created) - the missing part of the path is created."""
+        parent, path, missing, _ = await self.walk_folder(folder, timeout=timeout)
+        created = []
+        for name in missing:
+            node = await self.create_folder(parent, name, timeout=timeout)
+            parent, path = node.unique_id, f"{path}/{node.name}"
+            created.append(path)
+        return parent, path, created
 
     async def create_configuration(
         self,

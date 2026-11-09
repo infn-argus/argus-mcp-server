@@ -236,3 +236,62 @@ async def test_a_pretune_needs_a_step_count_of_at_least_one(app_context: AppCont
     _mock_snapshot(SET)
     answer = _payload(await build_registry().dispatch("apply_magnet_set", {"action": "pretune", "snapshot": SNAP, "steps_left": left}, ctx))
     assert answer["status"] == "error" and "at least 1" in answer["message"]
+
+
+# --- folders, and a service that cannot read or save values ------------------------
+
+NEW = "44444444-4444-4444-4444-444444444444"
+
+
+@respx.mock
+async def test_a_missing_folder_is_created_only_when_asked(app_context: AppContext):
+    ctx = _ctx(app_context, _supplies())
+    respx.get(f"{SAR}/node/{ROOT_FOLDER_ID}/children").mock(return_value=httpx.Response(200, json=[_node(FOLDER, "BTF_CONF", "FOLDER")]))
+    respx.get(f"{SAR}/node/{FOLDER}/children").mock(return_value=httpx.Response(200, json=[]))
+    made = respx.put(f"{SAR}/node").mock(return_value=httpx.Response(200, json=_node(NEW, "REDD", "FOLDER")))
+    respx.put(f"{SAR}/config").mock(return_value=httpx.Response(200, json={"configurationNode": _node(CONFIG, "pTL", "CONFIGURATION")}))
+    respx.get(f"{SAR}/take-snapshot/{CONFIG}").mock(return_value=httpx.Response(200, json=_live_items()))
+    respx.put(f"{SAR}/snapshot").mock(return_value=httpx.Response(200, json={"snapshotNode": _node(SNAP, "pTL", "SNAPSHOT")}))
+    registry = build_registry()
+
+    refused = _payload(await registry.dispatch("create_magnet_set", {"file_text": CSV, "name": "pTL", "folder": "BTF_CONF/REDD"}, ctx))
+    assert refused["status"] == "error" and "No folder 'REDD' in /BTF_CONF" in refused["message"]
+    assert "create_folders" in refused["message"] and not made.called
+
+    args = {"file_text": CSV, "name": "pTL", "folder": "BTF_CONF/REDD", "create_folders": True}
+    with confirm_writes_scope(True):
+        first = _payload(await registry.dispatch("create_magnet_set", dict(args), ctx))
+        assert "create the folder(s) /BTF_CONF/REDD" in first["action"] and not made.called
+        done = _payload(await registry.dispatch("create_magnet_set", {**args, "confirmation_id": first["confirmation_id"]}, ctx))
+    assert done["status"] == "success", done
+    assert done["folders_created"] == ["/BTF_CONF/REDD"]
+    assert json.loads(made.calls[0].request.content) == {"name": "REDD", "nodeType": "FOLDER", "description": "REDD"}
+    assert made.calls[0].request.url.params["parentNodeId"] == FOLDER
+
+
+@respx.mock
+async def test_without_the_services_live_read_the_files_values_are_still_saved(app_context: AppContext):
+    ctx = _ctx(app_context, _supplies())
+    _tree()
+    respx.put(f"{SAR}/config").mock(return_value=httpx.Response(200, json={"configurationNode": _node(CONFIG, "pTLp", "CONFIGURATION")}))
+    respx.get(f"{SAR}/take-snapshot/{CONFIG}").mock(return_value=httpx.Response(500, json={"error": "Internal Server Error"}))
+    saved = respx.put(f"{SAR}/snapshot").mock(return_value=httpx.Response(200, json={"snapshotNode": _node(SNAP, "pTLp", "SNAPSHOT")}))
+    done = _payload(await build_registry().dispatch("create_magnet_set", {"file_text": CSV, "name": "pTLp", "folder": "BTF_CONF"}, ctx))
+    assert done["status"] == "success", done
+    assert any("could not read the PVs" in n for n in done["notes"])
+    items = {i["configPv"]["pvName"]: i["value"] for i in json.loads(saved.calls[0].request.content)["snapshotData"]["snapshotItems"]}
+    assert items["BTF:MAG:OCEME642:QUATM001:CURRENT_SP"]["value"] == 0.331522
+    assert items["BTF:MAG:EASY:CHHTM001:STATE_SP"]["enum"]["labels"] == ["OFF", "STANDBY", "ON"]
+
+
+@respx.mock
+async def test_a_snapshot_that_cannot_be_saved_says_the_configuration_exists_and_not_to_take_a_live_one(app_context: AppContext):
+    ctx = _ctx(app_context, _supplies())
+    _tree()
+    respx.put(f"{SAR}/config").mock(return_value=httpx.Response(200, json={"configurationNode": _node(CONFIG, "pTLp", "CONFIGURATION")}))
+    respx.get(f"{SAR}/take-snapshot/{CONFIG}").mock(return_value=httpx.Response(200, json=_live_items()))
+    respx.put(f"{SAR}/snapshot").mock(return_value=httpx.Response(500, json={"error": "Internal Server Error"}))
+    answer = _payload(await build_registry().dispatch("create_magnet_set", {"file_text": CSV, "name": "pTLp", "folder": "BTF_CONF"}, ctx))
+    assert answer["status"] == "error"
+    assert f"/BTF_CONF/pTLp (id {CONFIG}) was created" in answer["message"]
+    assert "Do not take a live snapshot" in answer["message"] and "reuses the configuration" in answer["message"]

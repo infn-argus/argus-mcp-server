@@ -74,6 +74,26 @@ class SaveRestoreService:
     async def resolve_folder(self, folder: str) -> tuple[str, str]:
         return await self._saverestore.resolve_folder(folder)
 
+    async def folder_plan(self, folder: str, create: bool) -> tuple[str, list[str]]:
+        """(the folder's path, the folders that would be created). Without create, a missing folder
+        is an error naming what exists."""
+        if not create:
+            _, path = await self._saverestore.resolve_folder(folder)
+            return path, []
+        _, path, missing, _ = await self._saverestore.walk_folder(folder)
+        created, here = [], path
+        for name in missing:
+            here = f"{here}/{name}"
+            created.append(here)
+        return here, created
+
+    async def folder_for_writing(self, folder: str, create: bool) -> tuple[str, str, list[str]]:
+        """(id, path, the folders created) - creating the missing ones only with create."""
+        if create:
+            return await self._saverestore.ensure_folder(folder)
+        folder_id, path = await self._saverestore.resolve_folder(folder)
+        return folder_id, path, []
+
     async def plan_configuration(
         self,
         devices: list[str],
@@ -132,12 +152,13 @@ class SaveRestoreService:
         include_readbacks: bool = True,
         pvs: list[dict[str, Any]] | None = None,
         description: str = "",
+        create_folders: bool = False,
     ) -> dict[str, Any]:
         plan = await self.plan_configuration(devices, include_readbacks=include_readbacks, pvs=pvs)
         if not plan.pv_list:
             skipped = "; ".join(f"{d}: {why}" for d, why in plan.skipped.items()) or "no devices or PVs given"
             raise ValidationError(f"Nothing to save: {skipped}.")
-        folder_id, folder_path = await self._saverestore.resolve_folder(folder)
+        folder_id, folder_path, folders_created = await self.folder_for_writing(folder, create_folders)
         node = await self._saverestore.create_configuration(
             folder_id, name, plan.pv_list, description=description or _describe_devices(plan)
         )
@@ -145,6 +166,7 @@ class SaveRestoreService:
         readbacks = sum(1 for pv in plan.pv_list if pv.readback_pv_name)
         return {
             "configuration": {"unique_id": node.unique_id, "name": node.name, "path": path, "owner": node.user_name},
+            "folders_created": folders_created,
             "pv_count": len(plan.pv_list),
             "readback_count": readbacks,
             "devices": plan.devices,

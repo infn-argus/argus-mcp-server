@@ -28,7 +28,7 @@ from argus.core.errors import ValidationError
 from argus.providers.archiver.archiver_appliance import ArchiverApplianceProvider
 from argus.providers.epics.exceptions import EpicsError
 from argus.providers.epics.interface import EpicsProvider
-from argus.providers.saverestore.exceptions import SaveRestoreQueryError
+from argus.providers.saverestore.exceptions import SaveRestoreError, SaveRestoreQueryError
 from argus.providers.saverestore.models import SnrPvEntry
 from argus.providers.saverestore.saverestore import SaveRestoreProvider
 from argus.services.magnet_apply import (
@@ -156,17 +156,25 @@ class MagnetService:
 
     # --- save-and-restore -------------------------------------------------
 
-    async def plan_set(self, name: str, folder: str, targets: list[MagnetTarget]) -> dict[str, Any]:
-        """Whether the configuration exists (and fits) and the snapshot is free: raises if not."""
+    async def plan_set(
+        self, name: str, folder: str, targets: list[MagnetTarget], *, create_folders: bool = False
+    ) -> dict[str, Any]:
+        """Whether the configuration exists (and fits) and the snapshot is free: raises if not.
+        With create_folders, a missing folder is to be created ("new_folders")."""
         if not name or not name.strip():
             raise ValidationError("A name is needed for the configuration and its snapshot: ask the user for one.")
         name = name.strip()
-        folder_id, folder_path = await self._snr_service.resolve_folder(folder)
+        folder_path, new_folders = await self._snr_service.folder_plan(folder, create_folders)
+        wanted = _pv_entries(targets)
+        plan: dict[str, Any] = {"name": name, "folder": folder, "folder_path": folder_path,
+                                "new_folders": new_folders, "path": f"{folder_path}/{name}", "config": None,
+                                "pv_list": wanted}
+        if new_folders:
+            return plan
+        folder_id, _ = await self._snr_service.resolve_folder(folder)
         children = await self._snr.get_children(folder_id)
         config = next((c for c in children if c.node_type == "CONFIGURATION" and c.name == name), None)
-        wanted = _pv_entries(targets)
-        plan: dict[str, Any] = {"name": name, "folder_id": folder_id, "folder_path": folder_path,
-                                "path": f"{folder_path}/{name}", "config": config, "pv_list": wanted}
+        plan["config"] = config
         if config is None:
             return plan
         existing = await self._snr.get_configuration(config.unique_id)
@@ -188,24 +196,44 @@ class MagnetService:
         return plan
 
     async def create_set(
-        self, name: str, folder: str, targets: list[MagnetTarget], *, source: str, comment: str = ""
+        self, name: str, folder: str, targets: list[MagnetTarget], *, source: str, comment: str = "",
+        create_folders: bool = False,
     ) -> dict[str, Any]:
-        plan = await self.plan_set(name, folder, targets)
+        plan = await self.plan_set(name, folder, targets, create_folders=create_folders)
         name, path = plan["name"], plan["path"]
+        folder_id, _, folders_created = await self._snr_service.folder_for_writing(folder, create_folders)
         config = plan["config"]
         created = config is None
         if created:
             config = await self._snr.create_configuration(
-                plan["folder_id"], name, plan["pv_list"],
+                folder_id, name, plan["pv_list"],
                 description=f"Magnet set {name}, created by ARGUS from {source}",
             )
-        live_items = await self._snr.read_live_items(config.unique_id)
-        items, notes = await self._items_from_file(live_items, targets)
-        node, _ = await self._snr.save_snapshot(
-            config.unique_id, name, comment or f"Values of {source}, saved by ARGUS", items
-        )
+        notes: list[str] = []
+        try:
+            # Only the form of each value (units, display, an enum's states): the values are the file's.
+            live_items = await self._snr.read_live_items(config.unique_id)
+        except SaveRestoreError as exc:
+            notes.append(f"The save-and-restore service could not read the PVs ({exc}); the snapshot's values "
+                         "were built from the file and the PVs' states read by ARGUS.")
+            live_items = [_bare_item(pv) for pv in plan["pv_list"]]
+        items, more = await self._items_from_file(live_items, targets)
+        notes += more
+        try:
+            node, _ = await self._snr.save_snapshot(
+                config.unique_id, name, comment or f"Values of {source}, saved by ARGUS", items
+            )
+        except SaveRestoreError as exc:
+            raise SaveRestoreQueryError(
+                f"The configuration {path} (id {config.unique_id}) "
+                + ("was created" if created else "exists")
+                + f", but the snapshot of the file's values could NOT be saved: {exc}. Do not take a live "
+                "snapshot instead (that saves the machine's values, not the file's); tell the user, and retry "
+                "this same call once the save-and-restore service works - it reuses the configuration."
+            ) from exc
         return {
             "configuration": {"unique_id": config.unique_id, "path": path, "created": created},
+            "folders_created": folders_created,
             "snapshot": {"unique_id": node.unique_id, "name": node.name, "owner": node.user_name},
             "magnets": len(targets),
             "pv_count": len(plan["pv_list"]),
@@ -398,6 +426,11 @@ def set_pvs(targets: list[MagnetTarget], include_readbacks: bool = True) -> list
 def is_archived(status: str | None) -> bool:
     text = (status or "").lower()
     return text.startswith("being archived") or "initial sampling" in text or "appliance assigned" in text
+
+
+def _bare_item(pv: SnrPvEntry) -> dict[str, Any]:
+    return {"configPv": {"pvName": pv.pv_name, "readbackPvName": pv.readback_pv_name, "readOnly": pv.read_only},
+            "value": None}
 
 
 def _pv_entries(targets: list[MagnetTarget]) -> list[SnrPvEntry]:

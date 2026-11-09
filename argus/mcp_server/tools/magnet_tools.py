@@ -120,8 +120,10 @@ async def _check_magnet_file(arguments: dict[str, Any], ctx: AppContext) -> dict
 
 async def _describe_create(arguments: dict[str, Any], ctx: AppContext) -> str:
     parsed, source = await _file(arguments, ctx)
-    plan = await _service(ctx).plan_set(str(arguments.get("name") or ""), str(arguments.get("folder") or ""), parsed.targets)
-    config = (f"use the existing configuration {plan['path']}" if plan["config"] else
+    plan = await _service(ctx).plan_set(str(arguments.get("name") or ""), str(arguments.get("folder") or ""),
+                                        parsed.targets, create_folders=arguments.get("create_folders") is True)
+    folders = f"create the folder(s) {', '.join(plan['new_folders'])}, " if plan["new_folders"] else ""
+    config = folders + (f"use the existing configuration {plan['path']}" if plan["config"] else
               f"create the configuration {plan['path']} ({len(plan['pv_list'])} PVs: CURRENT_SP and STATE_SP of each "
               "supply, with their readbacks)")
     problems = f" Notes on the file: {' '.join(parsed.problems[:5])}" if parsed.problems else ""
@@ -134,6 +136,7 @@ async def _create_magnet_set(arguments: dict[str, Any], ctx: AppContext) -> dict
     result = await _service(ctx).create_set(
         str(arguments.get("name") or ""), str(arguments.get("folder") or ""), parsed.targets,
         source=source, comment=str(arguments.get("comment") or ""),
+        create_folders=arguments.get("create_folders") is True,
     )
     return {**result, "problems_in_file": parsed.problems, "next_step": _ASK_ABOUT_LOGBOOK}
 
@@ -291,8 +294,10 @@ TOOLS = [
             "properties": {
                 **_FILE_PROPERTIES,
                 "name": {"type": "string", "description": "Name of the configuration and of its snapshot, as the user chose it."},
-                "folder": {"type": "string", "description": "Existing save-and-restore folder: a path such as "
+                "folder": {"type": "string", "description": "Save-and-restore folder: a path such as "
                            "'BTF_CONF' or 'BTF_CONF/Magnets', or its uniqueId."},
+                "create_folders": {"type": "boolean", "description": "Create the folder (and any missing parent) "
+                                   "if it does not exist - only when the user asked for a new folder. Default false."},
                 "comment": {"type": "string", "description": "Optional comment for the snapshot."},
             },
             "required": ["name", "folder"],
