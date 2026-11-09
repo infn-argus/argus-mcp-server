@@ -112,8 +112,13 @@ _CREATE_CONFIGURATION_SCHEMA = {
         "folder": {
             "type": "string",
             "description": "Existing save-and-restore folder to create it in: a path from the root such as "
-            "'BTF_CONF' or 'BTF_CONF/Magnets', or a folder's uniqueId. Folders are not created; a wrong one "
-            "is answered with the folders that exist there.",
+            "'BTF_CONF' or 'BTF_CONF/Magnets', or a folder's uniqueId. A missing one is created only with "
+            "create_folders; otherwise it is answered with the folders that exist there.",
+        },
+        "create_folders": {
+            "type": "boolean",
+            "description": "Create the folder (and any missing parent) if it does not exist. Only when the user "
+            "asked for a new folder; default false.",
         },
         "devices": {
             "type": "array",
@@ -190,12 +195,15 @@ async def _describe_create_configuration(arguments: dict[str, Any], ctx: AppCont
     if not plan.pv_list:
         skipped = "; ".join(f"{d}: {why}" for d, why in plan.skipped.items()) or "no devices or PVs given"
         raise ValidationError(f"Nothing to save: {skipped}.")
-    _, folder_path = await ctx.saverestore_service.resolve_folder(str(arguments.get("folder") or ""))
+    folder_path, new_folders = await ctx.saverestore_service.folder_plan(
+        str(arguments.get("folder") or ""), arguments.get("create_folders") is True
+    )
     skipped = (
         " Not included: " + "; ".join(f"{d} ({why})" for d, why in plan.skipped.items()) + "." if plan.skipped else ""
     )
+    folders = f"Create the folder(s) {', '.join(new_folders)}, then c" if new_folders else "C"
     return (
-        f"Create the save-and-restore configuration {folder_path}/{arguments.get('name')} under your name, "
+        f"{folders}reate the save-and-restore configuration {folder_path}/{arguments.get('name')} under your name, "
         f"with {len(plan.pv_list)} PV(s): {pv_text}.{skipped}"
     )
 
@@ -270,6 +278,7 @@ async def _create_saverestore_configuration(arguments: dict[str, Any], ctx: AppC
         include_readbacks=arguments.get("include_readbacks", True) is not False,
         pvs=arguments.get("pvs"),
         description=arguments.get("description") or "",
+        create_folders=arguments.get("create_folders") is True,
     )
     return {**result, "next_step": _ASK_ABOUT_LOGBOOK}
 
