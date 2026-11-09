@@ -91,6 +91,10 @@ input schemas, enforced by
 | `create_saverestore_configuration` | Create a save-and-restore configuration from devices' setpoint (+ readback) PVs, as the signed-in user |
 | `take_saverestore_snapshot` | Snapshot an existing configuration (the service reads the PVs), as the signed-in user |
 | `restore_saverestore_snapshot` | Restore a snapshot to the live machine, as the signed-in user; always previewed PV by PV and confirmed |
+| `check_magnet_file` | Read a magnet settings file (the consoles' CSV `Name,Prefix,Current,State`, or the legacy `.dat`) against the machine now (read-only) |
+| `create_magnet_set` | A magnet file into a save-and-restore configuration (if new) and a snapshot of the same name holding the file's values, as the signed-in user |
+| `apply_magnet_set` | Put magnet power supplies at a snapshot's set, one pretune step towards it, all to 0 A and STANDBY, or all ON - in the consoles' order, waiting on readbacks; always previewed supply by supply and confirmed |
+| `archive_magnet_pvs` | Ask the Archiver Appliance to archive a magnet set's PVs (those not archived yet) |
 
 ## Knowledge source: legacy YAML/RAG/Olog, or the ARGUS Knowledge Hub
 
@@ -120,7 +124,8 @@ side — see [ADR 0004](docs/adr/0004-knowledge-hub-as-alternative-source.md).
 Write tools (`set_pv`, `set_pv_value`, `restart_ioc`, `execute_procedure`,
 `create_logbook_entry`, `update_logbook_entry`,
 `create_saverestore_configuration`, `take_saverestore_snapshot`,
-`restore_saverestore_snapshot`) can be confirmed in two
+`restore_saverestore_snapshot`, `create_magnet_set`, `apply_magnet_set`,
+`archive_magnet_pvs`) can be confirmed in two
 steps, for clients that send `X-Argus-Confirm-Writes: true` (LibreChat's
 registrations do; it has no approval step of its own). The first call
 changes nothing: it returns `confirmation_required`, a plain-language
@@ -128,10 +133,41 @@ preview, and a one-time `confirmation_id`. Only the same call repeated with
 that id, by the same user, within 10 minutes, runs. Clients without the
 header (the voice agent, which has its own operator confirmation) are
 unaffected, and their tool schemas are unchanged - except
-`restore_saverestore_snapshot`, which writes the whole machine and is
-confirmed for every client. See
+`restore_saverestore_snapshot` and `apply_magnet_set`, which write a whole
+set of the machine at once and are confirmed for every client. See
 `argus/mcp_server/confirmation.py` for what this does and doesn't
 guarantee.
+
+## Magnet sets
+
+A magnet settings file - the CSV the consoles' restore and pretune displays
+load (`Name,Prefix,Current,State`, one power supply a row), or the legacy
+whitespace `.dat` (`Name Current Pol StateCode`, prefix from the device
+inventory) - is given as its text or as a path in git.
+
+- `create_magnet_set` makes the save-and-restore configuration (each
+  supply's `CURRENT_SP` and `STATE_SP`, with `CURRENT_RB`/`STATE_RB` as
+  readbacks) unless one of that name already exists with exactly those PVs,
+  and a snapshot of the same name with the **file's** values. The model
+  asks the user for the name; the machine is not touched.
+- `apply_magnet_set` writes the supplies the way the consoles do
+  (`epik8s-opi` `Scripts/magapply.py`, ported to `services/magnet_apply.py`):
+  an ON supply going to STANDBY/OFF is first brought to 0 A and switched only
+  once `|CURRENT_RB| <= zero_tolerance`; states are set before currents;
+  each phase waits for its readbacks up to `timeout_s` (defaults 0.1 A,
+  0.5 A, 30 s). Actions: `set` (a snapshot), `pretune` (one step:
+  each supply moves `1/steps_left` of the way from its setpoint now, so
+  `steps_left=1` lands on the set; the user asks for each step), `standby`
+  (every supply of a configuration to 0 A and STANDBY) and `on`. Targets
+  outside a setpoint's control limits are refused before anything is
+  confirmed. The writes go through the PV gateway as this server, not as
+  the user.
+- `archive_magnet_pvs` uses the Archiver Appliance's management API
+  (`<ARCHIVER_BASE_URL>/mgmt/bpl`).
+
+An apply can take up to three phase timeouts (about 90 s by default): the
+MCP client's request timeout must allow it (LibreChat: the server's
+`timeout`).
 
 ## Development
 

@@ -30,6 +30,7 @@ from argus.mcp_server.tools.history_tools import TOOLS as HISTORY_TOOLS
 from argus.mcp_server.tools.hub_tools import TOOLS as HUB_TOOLS
 from argus.mcp_server.tools.knowledge_tools import TOOLS as KNOWLEDGE_TOOLS
 from argus.mcp_server.tools.logs_tools import TOOLS as LOGS_TOOLS
+from argus.mcp_server.tools.magnet_tools import TOOLS as MAGNET_TOOLS
 from argus.mcp_server.tools.ops_tools import TOOLS as OPS_TOOLS
 from argus.mcp_server.tools.pv_tools import TOOLS as PV_TOOLS
 from argus.mcp_server.tools.registry import ToolRegistry
@@ -56,6 +57,7 @@ def build_registry(settings: Settings | None = None) -> ToolRegistry:
     registry.register_many(DOCS_TOOLS)
     registry.register_many(KNOWLEDGE_TOOLS)
     registry.register_many(SAVERESTORE_TOOLS)
+    registry.register_many(MAGNET_TOOLS)
     if settings and settings.knowledge_hub.url and settings.knowledge_hub.token:
         registry.register_many(HUB_TOOLS)
     return registry

@@ -222,10 +222,23 @@ class SaveRestoreProvider:
         self, config_id: str, name: str, comment: str, *, timeout: float = 30.0
     ) -> tuple[SnrNode, list[SnrSnapshotValue]]:
         """Read the configuration's PVs (the service does it) and save them as a snapshot owned by the caller."""
+        items = await self.read_live_items(config_id, timeout=timeout)
+        return await self.save_snapshot(config_id, name, comment, items, timeout=timeout)
+
+    async def read_live_items(self, config_id: str, *, timeout: float = 30.0) -> list[dict[str, Any]]:
+        """The configuration's PVs as the service reads them now, as raw SnapshotItems
+        (each value a Phoebus VType; None for a PV it cannot connect). Saves nothing."""
         self._require_configured()
         items = await self._request("GET", f"/take-snapshot/{config_id}", timeout=timeout)
         if not isinstance(items, list):
             raise SaveRestoreQueryError("Unexpected take-snapshot response shape.")
+        return items
+
+    async def save_snapshot(
+        self, config_id: str, name: str, comment: str, items: list[dict[str, Any]], *, timeout: float = 30.0
+    ) -> tuple[SnrNode, list[SnrSnapshotValue]]:
+        """Save these SnapshotItems as a snapshot of config_id, owned by the caller."""
+        self._require_configured()
         body = {
             "snapshotNode": {"name": name, "nodeType": "SNAPSHOT", "description": comment or name},
             "snapshotData": {"snapshotItems": items},
@@ -277,9 +290,14 @@ class SaveRestoreProvider:
 
 
 def _vtype_value(vtype: Any) -> Any:
-    """The plain value inside a Phoebus VType as JSON ({"type":..., "value": 4.2, "alarm": ...})."""
+    """The plain value inside a Phoebus VType as JSON ({"type":..., "value": 4.2, "alarm": ...});
+    an enum's label rather than its index ("ON", not 1)."""
     if isinstance(vtype, dict):
-        return vtype.get("value")
+        value = vtype.get("value")
+        labels = (vtype.get("enum") or {}).get("labels")
+        if isinstance(value, int) and isinstance(labels, list) and 0 <= value < len(labels):
+            return labels[value]
+        return value
     return vtype
 
 def _refusal(exc: httpx.HTTPStatusError, method: str, path: str) -> SaveRestoreRefusedError:
@@ -316,8 +334,8 @@ def _to_snapshot_value(item: dict) -> SnrSnapshotValue:
     value_field = item.get("value") or {}
     return SnrSnapshotValue(
         pv_name=config_pv.get("pvName", ""),
-        value=value_field.get("value"),
-        readback_value=(item.get("readbackValue") or {}).get("value"),
+        value=_vtype_value(value_field) if value_field else None,
+        readback_value=_vtype_value(item.get("readbackValue")) if item.get("readbackValue") else None,
         units=(value_field.get("display") or {}).get("units"),
         severity=(value_field.get("alarm") or {}).get("severity"),
     )

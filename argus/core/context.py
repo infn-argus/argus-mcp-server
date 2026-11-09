@@ -39,6 +39,7 @@ from argus.services.history_service import HistoryService
 from argus.services.knowledge_hub_inventory_service import KnowledgeHubInventoryService
 from argus.services.knowledge_service import KnowledgeService
 from argus.services.operations_service import OperationsService, ProcedureRegistry
+from argus.services.magnet_service import MagnetService
 from argus.services.saverestore_service import SaveRestoreService
 
 
@@ -79,6 +80,8 @@ class AppContext:
     # whether or not any of them is (it's what list_knowledge_hub_workspaces
     # answers from), and unconfigured without KNOWLEDGE_HUB_URL/TOKEN.
     knowledge_hub: KnowledgeHubClient | None = None
+    # Magnet sets (services/magnet_service.py): files into save-and-restore, onto the machine.
+    magnet_service: MagnetService | None = None
 
     @classmethod
     def build(cls, settings: Settings | None = None) -> AppContext:
@@ -152,6 +155,14 @@ class AppContext:
         else:
             beamline_inventory_service = BeamlineInventoryService(knowledge=knowledge_service)
         saverestore_service = SaveRestoreService(saverestore=saverestore, inventory=beamline_inventory_service)
+        magnet_service = MagnetService(
+            saverestore_service=saverestore_service,
+            saverestore=saverestore,
+            epics=FallbackEpicsProvider(primary=epics_pva, secondary=epics_ca),
+            archiver=archiver,
+            inventory=beamline_inventory_service,
+            knowledge=knowledge_service,
+        )
 
         return cls(
             settings=settings,
@@ -181,4 +192,5 @@ class AppContext:
             beamline_inventory_service=beamline_inventory_service,
             saverestore_service=saverestore_service,
             knowledge_hub=knowledge_hub,
+            magnet_service=magnet_service,
         )
