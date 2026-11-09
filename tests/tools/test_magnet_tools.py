@@ -103,6 +103,8 @@ async def test_a_file_becomes_a_configuration_and_a_snapshot_of_the_files_values
     # Not connected: built from scratch, the states read from the PV.
     built = items["BTF:MAG:EASY:CHHTM001:CURRENT_SP"]["value"]
     assert built["type"]["name"] == "VDouble" and built["value"] == 0.0
+    # Phoebus reads every display limit present as a number: none may be a string such as "NaN".
+    assert all(not isinstance(v, str) for k, v in built["display"].items() if k != "units")
     assert items["BTF:MAG:EASY:CHHTM001:STATE_SP"]["value"]["value"] == ["OFF", "STANDBY", "ON"].index("STANDBY")
     assert all(i["readbackValue"] is None for i in items.values())
     assert supplies.writes == []  # the machine is not touched
