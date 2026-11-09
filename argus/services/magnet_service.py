@@ -455,10 +455,9 @@ def _vtime() -> dict[str, int]:
 
 
 _NO_ALARM = {"severity": "NONE", "status": "NONE", "name": "NONE"}
-_NO_DISPLAY = {
-    "lowAlarm": "NaN", "highAlarm": "NaN", "lowDisplay": "NaN", "highDisplay": "NaN",
-    "lowWarning": "NaN", "highWarning": "NaN", "units": "",
-}
+# Phoebus writes only the display fields that have a value (a NaN limit is left out), and
+# reads every limit present as a JSON number: "NaN" as a string makes it refuse the snapshot.
+_NO_DISPLAY = {"units": ""}
 
 
 def _vdouble(value: float, live: dict[str, Any] | None, stamp: dict[str, int]) -> dict[str, Any]:
