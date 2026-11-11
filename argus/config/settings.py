@@ -114,6 +114,14 @@ class KnowledgeHubSettings(_ProviderSettings):
     # list_workspaces reports it. Each search fans out across all of them.
     workspaces: str | None = Field(default=None, alias="KNOWLEDGE_HUB_WORKSPACES")
     timeout_seconds: float = Field(default=20.0, alias="KNOWLEDGE_HUB_TIMEOUT_SECONDS")
+    # Ask the hub as the person behind each tool call: their identity-provider
+    # access token (X-Argus-User-Token, forwarded by LibreChat - their INFN
+    # AAI login) is sent to the hub instead of KNOWLEDGE_HUB_TOKEN, so the
+    # hub answers with that person's roles, groups and restricted classes.
+    # A call with no caller token is refused, never answered with the
+    # service token. The hub must trust the client that issued the token
+    # (its OIDC_AUDIENCE naming LibreChat's client).
+    as_caller: bool = Field(default=False, alias="KNOWLEDGE_HUB_AS_CALLER")
 
 
 class GitHubSettings(_ProviderSettings):

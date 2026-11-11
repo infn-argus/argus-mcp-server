@@ -119,6 +119,17 @@ role in. Tool names and result shapes are the same either way, so a
 YAML-backed and a hub-backed server can answer the same question side by
 side — see [ADR 0004](docs/adr/0004-knowledge-hub-as-alternative-source.md).
 
+**Asking as each person.** With `KNOWLEDGE_HUB_AS_CALLER=true` the hub is
+called with the caller's own identity-provider access token — the
+`X-Argus-User-Token` header LibreChat fills with their INFN AAI login —
+instead of `KNOWLEDGE_HUB_TOKEN`, which is then not needed. The hub applies
+that person's roles, groups and restricted classes, so two people asking the
+same question get what each may read. Each person has their own hub session
+and workspace list; a call with no caller token is refused, never answered
+with a service token. The hub must trust the client that issued the token:
+its `OIDC_AUDIENCE` names LibreChat's client (e.g.
+`argus-knowledge-hub,argus-librechat`).
+
 ## Confirmed writes
 
 Write tools (`set_pv`, `set_pv_value`, `restart_ioc`, `execute_procedure`,

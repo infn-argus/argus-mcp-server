@@ -19,13 +19,21 @@ argument; list_workspaces says which ones the token may ask in. Callers fan
 out across workspace_ids() -- the configured KNOWLEDGE_HUB_WORKSPACES, or
 every workspace the token may read when that's blank (all of them, for an
 administrator's token with the `admin` scope).
+
+With KNOWLEDGE_HUB_AS_CALLER the credential is the caller's own access token
+(core/request_context.current_caller_token), so the hub applies that person's
+access. Each credential has its own MCP session and its own workspace list:
+nothing one person's token was answered is reused for another.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import itertools
 import json
+from collections import OrderedDict
+from dataclasses import dataclass, field
 from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar, TypeVar
 
@@ -33,6 +41,7 @@ import httpx
 
 from argus.config.settings import KnowledgeHubSettings
 from argus.core.cache import AsyncTTLCache
+from argus.core.request_context import current_caller_token
 from argus.providers.base import ProviderHealth, ProviderStatus
 from argus.providers.knowledge_hub.exceptions import (
     KnowledgeHubAuthError,
@@ -47,6 +56,18 @@ T = TypeVar("T")
 
 PROTOCOL_VERSION = "2025-06-18"
 CLIENT_INFO = {"name": "argus-mcp-server", "version": "1"}
+# Sessions kept at once, one per credential: the least recently used is dropped (and re-initialized if needed).
+MAX_SESSIONS = 256
+
+
+@dataclass
+class _Session:
+    """One credential's MCP session with the hub."""
+
+    token: str
+    session_id: str | None = None
+    initialized: bool = False
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class KnowledgeHubClient:
@@ -55,15 +76,36 @@ class KnowledgeHubClient:
     def __init__(self, settings: KnowledgeHubSettings) -> None:
         self._settings = settings
         self._ids = itertools.count(1)
-        self._session_id: str | None = None
-        self._initialized = False
-        self._init_lock = asyncio.Lock()
+        self._sessions: OrderedDict[str, _Session] = OrderedDict()
         # The workspace listing changes on the order of days; one GET per
-        # five minutes at most, shared by every concurrent fan-out.
-        self._workspace_cache: AsyncTTLCache = AsyncTTLCache(maxsize=1, ttl=300.0)
+        # five minutes at most per credential, shared by every concurrent fan-out.
+        self._workspace_cache: AsyncTTLCache = AsyncTTLCache(maxsize=MAX_SESSIONS, ttl=300.0)
 
     def is_configured(self) -> bool:
-        return bool(self._settings.url and self._settings.token)
+        return bool(self._settings.url and (self._settings.token or self._settings.as_caller))
+
+    def _session(self) -> tuple[str, _Session]:
+        """The credential for this call and its session: the caller's token with KNOWLEDGE_HUB_AS_CALLER, else
+        the service token. Keyed by a digest, so no token is kept as a key or written anywhere."""
+        if self._settings.as_caller:
+            token = current_caller_token()
+            if not token:
+                raise KnowledgeHubAuthError(
+                    "The Knowledge Hub is asked as the person calling, and this call carries no sign-in "
+                    "(X-Argus-User-Token): sign in to the assistant again."
+                )
+        else:
+            token = self._settings.token or ""
+        key = hashlib.sha256(token.encode()).hexdigest()[:24]
+        session = self._sessions.get(key)
+        if session is None:
+            session = self._sessions[key] = _Session(token=token)
+            while len(self._sessions) > MAX_SESSIONS:
+                self._sessions.popitem(last=False)
+        else:
+            session.token = token
+            self._sessions.move_to_end(key)
+        return key, session
 
     def configured_workspaces(self) -> list[str]:
         return [w.strip() for w in (self._settings.workspaces or "").split(",") if w.strip()]
@@ -78,9 +120,9 @@ class KnowledgeHubClient:
                 "The ARGUS Knowledge Hub is not configured (set KNOWLEDGE_HUB_URL and KNOWLEDGE_HUB_TOKEN)."
             )
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, session: _Session) -> dict[str, str]:
         headers = {
-            "Authorization": f"Bearer {self._settings.token}",
+            "Authorization": f"Bearer {session.token}",
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
             "MCP-Protocol-Version": PROTOCOL_VERSION,
@@ -91,14 +133,17 @@ class KnowledgeHubClient:
         configured = self.configured_workspaces()
         if configured:
             headers["X-Workspace-Id"] = configured[0]
-        if self._session_id:
-            headers["Mcp-Session-Id"] = self._session_id
+        if session.session_id:
+            headers["Mcp-Session-Id"] = session.session_id
         return headers
 
     async def health(self) -> ProviderHealth:
         if not self.is_configured():
             return ProviderHealth(name=self.name, status=ProviderStatus.UNCONFIGURED)
         try:
+            if self._settings.as_caller and not current_caller_token():
+                # A health probe has no caller: say the hub is configured to be asked as one, not that it is down.
+                return ProviderHealth(name=self.name, status=ProviderStatus.OK, detail="asked as each caller")
             await self._rpc("ping", {}, timeout=3)
         except (KnowledgeHubUnavailableError, KnowledgeHubTimeoutError, KnowledgeHubAuthError) as exc:
             return ProviderHealth(name=self.name, status=ProviderStatus.UNAVAILABLE, detail=str(exc))
@@ -106,10 +151,10 @@ class KnowledgeHubClient:
             pass  # it answered; a server without ping is still up
         return ProviderHealth(name=self.name, status=ProviderStatus.OK)
 
-    async def _post(self, payload: dict, *, timeout: float) -> httpx.Response:
+    async def _post(self, session: _Session, payload: dict, *, timeout: float) -> httpx.Response:
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                return await client.post(self._settings.url, json=payload, headers=self._headers())
+                return await client.post(self._settings.url, json=payload, headers=self._headers(session))
         except httpx.TimeoutException as exc:
             raise KnowledgeHubTimeoutError(f"Timeout calling the Knowledge Hub ({payload.get('method')})") from exc
         except httpx.HTTPError as exc:
@@ -123,48 +168,50 @@ class KnowledgeHubClient:
         if resp.status_code >= 400:
             raise KnowledgeHubUnavailableError(f"Knowledge Hub returned HTTP {resp.status_code}: {_detail(resp)}")
 
-    async def _send(self, method: str, params: dict, *, timeout: float) -> dict:
+    async def _send(self, session: _Session, method: str, params: dict, *, timeout: float) -> dict:
         request_id = next(self._ids)
         payload = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
-        resp = await self._post(payload, timeout=timeout)
-        if resp.status_code == 404 and self._session_id:
+        resp = await self._post(session, payload, timeout=timeout)
+        if resp.status_code == 404 and session.session_id:
             # The server forgot our session (restart, expiry): the spec's
             # answer is 404, and the client's is to initialize again.
-            self._session_id = None
-            self._initialized = False
+            session.session_id = None
+            session.initialized = False
             raise _SessionExpired()
         self._check_status(resp)
         if session_id := resp.headers.get("mcp-session-id"):
-            self._session_id = session_id
+            session.session_id = session_id
         message = _parse_message(resp, request_id)
         if "error" in message:
             error = message["error"] or {}
             raise KnowledgeHubQueryError(f"Knowledge Hub error {error.get('code')}: {error.get('message')}")
         return message.get("result") or {}
 
-    async def _ensure_initialized(self, timeout: float) -> None:
-        if self._initialized:
+    async def _ensure_initialized(self, session: _Session, timeout: float) -> None:
+        if session.initialized:
             return
-        async with self._init_lock:
-            if self._initialized:
+        async with session.lock:
+            if session.initialized:
                 return
             await self._send(
+                session,
                 "initialize",
                 {"protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": CLIENT_INFO},
                 timeout=timeout,
             )
             notification = {"jsonrpc": "2.0", "method": "notifications/initialized"}
-            resp = await self._post(notification, timeout=timeout)
+            resp = await self._post(session, notification, timeout=timeout)
             self._check_status(resp)
-            self._initialized = True
+            session.initialized = True
 
     async def _rpc(self, method: str, params: dict, *, timeout: float | None = None) -> dict:
         self._require_configured()
         timeout = timeout if timeout is not None else self.timeout
+        _, session = self._session()
         for attempt in range(2):
-            await self._ensure_initialized(timeout)
+            await self._ensure_initialized(session, timeout)
             try:
-                return await self._send(method, params, timeout=timeout)
+                return await self._send(session, method, params, timeout=timeout)
             except _SessionExpired:
                 if attempt:
                     raise KnowledgeHubUnavailableError("The Knowledge Hub keeps dropping the MCP session.") from None
@@ -206,7 +253,10 @@ class KnowledgeHubClient:
 
     async def list_workspaces(self) -> list[HubWorkspace]:
         """The workspaces ARGUS asks in: the configured ones that the token may read, or all it may read."""
-        available = await self._workspace_cache.get_or_set("workspaces", self._fetch_workspaces)
+        self._require_configured()
+        key, _ = self._session()
+        # Per credential: one person's readable workspaces are never another's.
+        available = await self._workspace_cache.get_or_set(f"workspaces:{key}", self._fetch_workspaces)
         configured = self.configured_workspaces()
         if not configured:
             return list(available)
