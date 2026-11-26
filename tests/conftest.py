@@ -16,6 +16,7 @@ from argus.config.settings import (
     KubernetesSettings,
     LogbookSettings,
     LokiSettings,
+    PrometheusSettings,
     SaveRestoreSettings,
     Settings,
 )
@@ -34,7 +35,9 @@ from argus.providers.git.gitlab import GitLabProvider
 from argus.providers.kubernetes.kubernetes import KubernetesProvider
 from argus.providers.logbook.logbook import LogbookProvider
 from argus.providers.loki.loki import LokiProvider
+from argus.providers.prometheus.prometheus import PrometheusProvider
 from argus.providers.saverestore.saverestore import SaveRestoreProvider
+from argus.services.cluster_service import ClusterService
 from argus.services.device_service import DeviceService
 from argus.services.diagnostics_service import DiagnosticsService
 from argus.services.documentation_service import DocumentationService
@@ -105,6 +108,7 @@ def app_context(fake_epics: FakeEpicsProvider, unconfigured_epics_pva: FakeEpics
     logbook = LogbookProvider(LogbookSettings(_env_file=None))
     elastic = ElasticsearchProvider(ElasticSettings(_env_file=None))
     loki = LokiProvider(LokiSettings(_env_file=None))
+    prometheus = PrometheusProvider(PrometheusSettings(_env_file=None))
     documentation = LocalTfidfDocumentationProvider(DocumentationSettings(_env_file=None))
     github = GitHubProvider(GitHubSettings(_env_file=None))
     gitlab = GitLabProvider(GitLabSettings(_env_file=None))
@@ -168,4 +172,6 @@ def app_context(fake_epics: FakeEpicsProvider, unconfigured_epics_pva: FakeEpics
         knowledge_service=knowledge_service,
         beamline_inventory_service=beamline_inventory_service,
         saverestore_service=saverestore_service,
+        prometheus=prometheus,
+        cluster_service=ClusterService(kubernetes=kubernetes, prometheus=prometheus),
     )

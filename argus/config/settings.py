@@ -72,6 +72,15 @@ class LokiSettings(_ProviderSettings):
     default_limit: int = Field(default=200, alias="LOKI_DEFAULT_LIMIT")
 
 
+class PrometheusSettings(_ProviderSettings):
+    # The cluster's Prometheus (kube-prometheus-stack), e.g.
+    # http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+    # -- node-exporter and cAdvisor metrics: node/pod network traffic and
+    # drops, UDP buffer errors, CPU. Read-only.
+    base_url: str | None = Field(default=None, alias="PROMETHEUS_BASE_URL")
+    timeout_seconds: float = Field(default=10.0, alias="PROMETHEUS_TIMEOUT_SECONDS")
+
+
 class DocumentationSettings(_ProviderSettings):
     docs_path: str | None = Field(default=None, alias="DOCS_PATH")
     index_path: str | None = Field(default=None, alias="DOCS_INDEX_PATH")
@@ -195,6 +204,7 @@ class Settings(BaseSettings):
     logbook: LogbookSettings = Field(default_factory=LogbookSettings)
     elastic: ElasticSettings = Field(default_factory=ElasticSettings)
     loki: LokiSettings = Field(default_factory=LokiSettings)
+    prometheus: PrometheusSettings = Field(default_factory=PrometheusSettings)
     documentation: DocumentationSettings = Field(default_factory=DocumentationSettings)
     ragflow: RagflowSettings = Field(default_factory=RagflowSettings)
     knowledge_hub: KnowledgeHubSettings = Field(default_factory=KnowledgeHubSettings)

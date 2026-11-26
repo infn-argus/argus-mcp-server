@@ -128,5 +128,10 @@ async def test_tool_count_is_within_high_level_target_band():
     # apply_magnet_set (put supplies at a set, a pretune step, all standby or
     # all on, in the consoles' order with readback waits: one tool, since these
     # share the preview and the always-on confirmation) and archive_magnet_pvs
-    # (the Archiver Appliance's management side, a distinct service).
-    assert 15 <= len(registry.list_tools()) <= 34
+    # (the Archiver Appliance's management side, a distinct service). +2 more
+    # (36): inspect_pod and inspect_node - cluster bottleneck diagnosis
+    # (Multus networks, events, node conditions, Prometheus per-interface
+    # rates/drops, UDP buffer overflows, softirq CPU). A device-less question
+    # ("is dom003 dropping packets?") has no device for diagnose_device to
+    # resolve, and the node is a different subject from the pod on it.
+    assert 15 <= len(registry.list_tools()) <= 36

@@ -30,8 +30,10 @@ from argus.providers.knowledge_hub.client import KnowledgeHubClient
 from argus.providers.logbook.knowledge_hub import KnowledgeHubLogbookProvider
 from argus.providers.logbook.logbook import LogbookProvider
 from argus.providers.loki.loki import LokiProvider
+from argus.providers.prometheus.prometheus import PrometheusProvider
 from argus.providers.saverestore.saverestore import SaveRestoreProvider
 from argus.services.beamline_inventory_service import BeamlineInventoryService
+from argus.services.cluster_service import ClusterService
 from argus.services.device_service import DeviceService
 from argus.services.diagnostics_service import DiagnosticsService
 from argus.services.documentation_service import DocumentationService
@@ -82,6 +84,10 @@ class AppContext:
     knowledge_hub: KnowledgeHubClient | None = None
     # Magnet sets (services/magnet_service.py): files into save-and-restore, onto the machine.
     magnet_service: MagnetService | None = None
+    # Node/pod network and CPU metrics (node-exporter, cAdvisor), and the
+    # inspect_pod/inspect_node diagnostics built on it and the Kubernetes API.
+    prometheus: PrometheusProvider | None = None
+    cluster_service: ClusterService | None = None
 
     @classmethod
     def build(cls, settings: Settings | None = None) -> AppContext:
@@ -103,6 +109,7 @@ class AppContext:
             logbook = olog
         elastic = ElasticsearchProvider(settings.elastic)
         loki = LokiProvider(settings.loki)
+        prometheus = PrometheusProvider(settings.prometheus)
         documentation: DocumentationProvider
         if settings.documentation_backend == "ragflow":
             documentation = RagflowDocumentationProvider(settings.ragflow)
@@ -164,6 +171,12 @@ class AppContext:
             knowledge=knowledge_service,
         )
 
+        cluster_service = ClusterService(
+            kubernetes=kubernetes,
+            prometheus=prometheus,
+            default_namespace=settings.kubernetes.default_namespace,
+        )
+
         return cls(
             settings=settings,
             epics_ca=epics_ca,
@@ -193,4 +206,6 @@ class AppContext:
             saverestore_service=saverestore_service,
             knowledge_hub=knowledge_hub,
             magnet_service=magnet_service,
+            prometheus=prometheus,
+            cluster_service=cluster_service,
         )
