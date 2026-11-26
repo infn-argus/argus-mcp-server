@@ -35,6 +35,7 @@ method on an unconfigured provider raises that provider's
 | Archiver Appliance | `providers/archiver/archiver_appliance.py` | REST: `/retrieval/data/getData.json` | `ARCHIVER_BASE_URL` | `ArchiverUnavailableError`, `ArchiverQueryError`, `ArchiverTimeoutError` |
 | ChannelFinder | `providers/channelfinder/channelfinder.py` | REST: `/ChannelFinder/resources/channels` | `CHANNELFINDER_BASE_URL`, `CHANNELFINDER_USERNAME`/`PASSWORD` | `ChannelFinderUnavailableError`, `ChannelFinderQueryError` |
 | Kubernetes | `providers/kubernetes/kubernetes.py` | official [`kubernetes`](https://pypi.org/project/kubernetes/) client (sync client, offloaded via `asyncio.to_thread`) | `KUBECONFIG` (or in-cluster config), `K8S_NAMESPACE_DEFAULT`, `K8S_IOC_LABEL_SELECTOR_TEMPLATE` | `KubernetesUnavailableError`, `KubernetesResourceNotFoundError` |
+| Prometheus | `providers/prometheus/prometheus.py` | REST: `/api/v1/query` (instant queries). node-exporter for node interfaces, UDP and softnet counters, CPU; cAdvisor for each pod's interfaces (Multus `net1`...). Structured arguments only: PromQL is built and quoted by the provider | `PROMETHEUS_BASE_URL`, `PROMETHEUS_TIMEOUT_SECONDS` | `PrometheusUnconfiguredError`, `PrometheusUnavailableError`, `PrometheusTimeoutError`, `PrometheusQueryError`, `PrometheusNodeNotFoundError` |
 | ArgoCD | `providers/argocd/argocd.py` | REST: `/api/v1/applications` | `ARGOCD_SERVER_URL`, `ARGOCD_AUTH_TOKEN` | `ArgoCDUnavailableError`, `ArgoCDAuthError` |
 | Logbook | `providers/logbook/logbook.py` | olog-compatible REST (`/Olog/logs`) | `LOGBOOK_BASE_URL`, `LOGBOOK_USERNAME`/`PASSWORD` | `LogbookUnavailableError`, `LogbookQueryError` |
 | Elasticsearch | `providers/elastic/elasticsearch.py` | official [`elasticsearch`](https://pypi.org/project/elasticsearch/) async client | `ELASTIC_URL`, `ELASTIC_API_KEY`, `ELASTIC_DEFAULT_INDEX` | `ElasticsearchUnavailableError`, `ElasticsearchQueryError` |
@@ -46,6 +47,21 @@ method on an unconfigured provider raises that provider's
 | Save & Restore | `providers/saverestore/saverestore.py` | REST: Phoebus save-and-restore's `/search`, `/node/{id}`, `/config/{id}`, `/snapshot/{id}`; creating with the caller's token (INFN build, JWT): `PUT /config`, `GET /take-snapshot/{config}` + `PUT /snapshot`; restoring previewed with `GET /compare/{snapshot}`, done with `POST /restore/node` | `SAVERESTORE_BASE_URL` | `SaveRestoreUnconfiguredError`, `SaveRestoreUnavailableError`, `SaveRestoreTimeoutError`, `SaveRestoreQueryError` |
 
 ## Notes
+
+- **Cluster diagnostics need cluster-scoped read access.** `inspect_pod` works
+  with the namespaced Role ARGUS already has (pods, events in its namespace),
+  plus `get nodes` for the node's state. `inspect_node` also lists every pod on
+  the node, across namespaces. Grant a ClusterRole with `get`/`list` on
+  `nodes` and `list` on `pods` (nothing else - no `exec`, no secrets); without
+  it those sections come back as `unavailable: ... forbidden` under `sources`
+  and the Prometheus sections still answer. Prometheus needs no credentials
+  in-cluster.
+- **Node names differ between Kubernetes and node-exporter** (FQDN vs short
+  hostname, e.g. `plk8sdadom001.lnf.infn.it` vs `plk8sdadom001`):
+  `PrometheusProvider.resolve_node_instance` matches them by their first label.
+- **`inspect_pod(ioc=...)` falls back to the epik8s label.** When
+  `K8S_IOC_LABEL_SELECTOR_TEMPLATE` finds no pod, it tries
+  `app.kubernetes.io/instance=<ioc>` (what epik8s' ioc-chart sets).
 
 - **The Olog logbook can act as the caller.** When a tool call carries the
   caller's identity-provider access token in `X-Argus-User-Token` (LibreChat

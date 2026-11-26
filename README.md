@@ -79,6 +79,8 @@ input schemas, enforced by
 | `get_logs` | Search historical application/IOC logs (Elasticsearch) |
 | `list_iocs` | List IOCs and their Kubernetes pod status |
 | `restart_ioc` | Restart an IOC's pod |
+| `inspect_pod` | Diagnose a pod (or an IOC's pod): restarts and why, node, Multus networks and IPs, placement, events, per-interface rates/drops (Prometheus), with findings |
+| `inspect_node` | Diagnose a node as a bottleneck: conditions, labels, pods on it and their extra networks, interface rates vs link speed, drops, UDP buffer overflows, softirq CPU, with findings |
 | `machine_summary` | Machine-wide IOC health + recent alarm counts |
 | `execute_procedure` | Run a named, pre-approved operational procedure (scaffolded; no procedures ship yet — see [ADR context](docs/adr/)) |
 | `search_documentation` | Search technical documentation (local TF-IDF by default, or RAGFLOW — see [providers.md](docs/providers.md)) |
