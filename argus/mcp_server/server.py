@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Sequence
 
 from mcp.server import Server
-from mcp.types import TextContent, Tool
+from mcp.types import EmbeddedResource, TextContent, Tool
 
 from argus.__about__ import __version__
 from argus.config.logging import configure_logging
@@ -73,7 +73,7 @@ def build_mcp_server(registry: ToolRegistry, ctx: AppContext) -> Server:
         return registry.list_tools(confirm_writes=extract_confirm_writes(current_http_request(server)))
 
     @server.call_tool()
-    async def handle_call_tool(name: str, arguments: dict) -> Sequence[TextContent]:
+    async def handle_call_tool(name: str, arguments: dict) -> Sequence[TextContent | EmbeddedResource]:
         request = current_http_request(server)
         correlation = extract_correlation_headers(request)
         with caller_token_scope(extract_caller_token(request)), confirm_writes_scope(extract_confirm_writes(request)):

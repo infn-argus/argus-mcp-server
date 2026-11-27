@@ -141,5 +141,10 @@ async def test_tool_count_is_within_high_level_target_band():
     # +2 more (39): find_leftover_iocs and remove_leftover_ioc - IOC workloads
     # nothing manages any more (ArgoCD app gone, or deployed by hand), which
     # hold devices the current IOC needs; the removal is a separate, always-
-    # confirmed write so the read-only report can be run freely.
-    assert 15 <= len(registry.list_tools()) <= 39
+    # confirmed write so the read-only report can be run freely. +1 more (40):
+    # plot_pv_history - charts of archived PVs computed and drawn by ARGUS
+    # (trend, difference, scatter, histogram, fft) and returned as a ui://
+    # page the chat shows inline. get_history returns data for the model to
+    # read; a model that draws a chart from it re-types every point, which is
+    # slow, lossy and timed out in LibreChat.
+    assert 15 <= len(registry.list_tools()) <= 40

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from argus.core.context import AppContext
 from argus.core.errors import ValidationError
-from argus.mcp_server.tools.registry import ToolDefinition
+from mcp.types import EmbeddedResource, TextResourceContents
+
+from argus.mcp_server.tools.registry import ATTACHMENTS_KEY, ToolDefinition
+from argus.services.plot_service import KINDS, MAX_PVS, PlotService
 
 # 120 points draw a clear chart; a model that writes the chart re-types every
 # point (~2.5k tokens here), and 300 took long enough to hit LibreChat's
@@ -15,10 +19,19 @@ _DEFAULT_POINTS = 120
 _MIN_POINTS = 10
 _MAX_POINTS = 2000
 
+_MAX_COMPARE = 5
+
 _GET_HISTORY_SCHEMA = {
     "type": "object",
     "properties": {
         "pv_name": {"type": "string", "description": "The PV to retrieve historical trend data for."},
+        "compare_with": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": _MAX_COMPARE,
+            "description": "Other PVs to compare over the same range (e.g. the setpoint, another magnet, a BPM). "
+            "Each comes back as its own series, and viewer_url shows all of them on one chart.",
+        },
         "start": {"type": "string", "description": "ISO 8601 start time. Defaults to 1 hour ago."},
         "end": {"type": "string", "description": "ISO 8601 end time. Defaults to now."},
         "max_points": {
@@ -91,11 +104,93 @@ async def _get_history(arguments: dict[str, Any], ctx: AppContext) -> dict[str, 
     if start >= end:
         raise ValidationError("start must be before end.")
 
-    series = await ctx.history_service.get_history(pv_name, start, end, max_points=max_points)
-    payload = _history_payload(series, start, end)
-    viewer = ctx.history_service.archiver_viewer_url(pv_name, start, end)
+    compare = arguments.get("compare_with") or []
+    if not isinstance(compare, list) or len(compare) > _MAX_COMPARE or not all(
+        isinstance(p, str) and p.strip() for p in compare
+    ):
+        raise ValidationError(f"compare_with must be a list of at most {_MAX_COMPARE} PV names.")
+    compare = [p for p in dict.fromkeys(compare) if p != pv_name]
+
+    if not compare:
+        series = await ctx.history_service.get_history(pv_name, start, end, max_points=max_points)
+        payload = _history_payload(series, start, end)
+    else:
+        all_series = await asyncio.gather(
+            *(ctx.history_service.get_history(pv, start, end, max_points=max_points) for pv in [pv_name, *compare])
+        )
+        payload = {
+            "start": _iso(start),
+            "end": _iso(end),
+            "series": [{k: v for k, v in _history_payload(s, start, end).items() if k not in ("start", "end")}
+                       for s in all_series],
+        }
+    viewer = ctx.history_service.archiver_viewer_url([pv_name, *compare], start, end)
     if viewer:
         payload["viewer_url"] = viewer
+    return payload
+
+
+_PLOT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "pvs": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "maxItems": MAX_PVS,
+            "description": "PVs to chart. trend/histogram/fft: 1-6 PVs. difference and scatter: exactly 2 "
+            "(A, B): difference plots A-B, scatter plots B against A.",
+        },
+        "kind": {
+            "type": "string",
+            "enum": list(KINDS),
+            "description": "trend: values over time (several PVs overlaid, a second axis for other units). "
+            "difference: A-B over time (e.g. setpoint vs readback). scatter: B vs A, with correlation and a "
+            "linear fit. histogram: distribution of values, with percentiles. fft: amplitude spectrum, with "
+            "the strongest periodicities.",
+        },
+        "start": {"type": "string", "description": "ISO 8601 start time. Defaults to 1 hour ago."},
+        "end": {"type": "string", "description": "ISO 8601 end time. Defaults to now."},
+        "bins": {"type": "integer", "minimum": 5, "maximum": 200, "description": "Histogram bins (default 50)."},
+        "title": {"type": "string", "description": "Chart title. Defaults to the kind and the PV names."},
+    },
+    "required": ["pvs"],
+}
+
+
+async def _plot_pv_history(arguments: dict[str, Any], ctx: AppContext) -> dict[str, Any]:
+    pvs = arguments.get("pvs")
+    if isinstance(pvs, str):
+        pvs = [pvs]
+    kind = arguments.get("kind", "trend")
+    bins = arguments.get("bins", 50)
+    if isinstance(bins, bool) or not isinstance(bins, int) or not 5 <= bins <= 200:
+        raise ValidationError("bins must be an integer between 5 and 200.")
+    title = arguments.get("title")
+    if title is not None and not isinstance(title, str):
+        raise ValidationError("title must be a string.")
+
+    now = datetime.now(timezone.utc)
+    start = _parse_time(arguments.get("start"), now - timedelta(hours=1))
+    end = _parse_time(arguments.get("end"), now)
+    start = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+    end = end if end.tzinfo else end.replace(tzinfo=timezone.utc)
+
+    result = await PlotService(ctx.archiver).plot(pvs or [], kind, start, end, bins=bins, title=title)
+    payload: dict[str, Any] = dict(result.summary)
+    viewer = ctx.history_service.archiver_viewer_url(pvs, start, end)
+    if viewer:
+        payload["viewer_url"] = viewer
+    payload["chart"] = (
+        "The chart is attached as an interactive page that the chat shows to the user (zoom, hover). Don't "
+        "redraw it or list its points: explain the numbers above."
+    )
+    payload[ATTACHMENTS_KEY] = [
+        EmbeddedResource(
+            type="resource",
+            resource=TextResourceContents(uri=result.uri, mimeType="text/html", text=result.html),
+        )
+    ]
     return payload
 
 
@@ -278,6 +373,20 @@ TOOLS = [
         ),
         input_schema=_GET_HISTORY_SCHEMA,
         handler=_get_history,
+    ),
+    ToolDefinition(
+        name="plot_pv_history",
+        description=(
+            "Draw a chart of archived PVs, computed by ARGUS from the Archiver Appliance and shown to the user "
+            "as an interactive chart - you don't write the chart or copy any data. Kinds: trend (several PVs "
+            "over time), difference (A-B, e.g. setpoint vs readback), scatter (B vs A, correlation and linear "
+            "fit), histogram (distribution, percentiles), fft (spectrum, dominant periods). Returns the "
+            "numbers behind the chart to explain, and viewer_url for the archiver's own viewer. Use it "
+            "whenever the user asks for a graph, plot, comparison, correlation, distribution or spectrum of "
+            "PV history."
+        ),
+        input_schema=_PLOT_SCHEMA,
+        handler=_plot_pv_history,
     ),
     ToolDefinition(
         name="get_alarm_history",

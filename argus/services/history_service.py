@@ -37,7 +37,7 @@ class HistoryService:
     ) -> ArchiverSeries:
         return await self._archiver.get_data(pv_name, start, end, max_points=max_points)
 
-    def archiver_viewer_url(self, pv_name: str, start: datetime, end: datetime) -> str | None:
+    def archiver_viewer_url(self, pv_name: str | list[str], start: datetime, end: datetime) -> str | None:
         return self._archiver.viewer_url(pv_name, start, end)
 
     async def get_alarm_history(self, device_name: str, since: datetime | None = None) -> list[LogbookEntry]:

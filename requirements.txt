@@ -18,3 +18,5 @@ p4p
 kubernetes
 elasticsearch[async]
 scikit-learn
+# plot_pv_history: alignment, statistics, FFT (also pulled in by scikit-learn).
+numpy

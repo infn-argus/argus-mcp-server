@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import structlog
-from mcp.types import TextContent, Tool
+from mcp.types import EmbeddedResource, TextContent, Tool
 
 from argus.core.context import AppContext
 from argus.core.errors import ArgusError
@@ -38,6 +38,11 @@ _CONFIRM_PROPERTY = {
     "description": "Only on the second call, after the user explicitly confirmed the preview: the "
     "confirmation_id the first call returned.",
 }
+
+
+# A handler may return this key with a list of extra MCP content items
+# (EmbeddedResource...) to send after its JSON answer.
+ATTACHMENTS_KEY = "_attachments"
 
 
 @dataclass(frozen=True)
@@ -104,7 +109,7 @@ class ToolRegistry:
         ctx: AppContext,
         *,
         correlation: dict[str, str] | None = None,
-    ) -> list[TextContent]:
+    ) -> list[TextContent | EmbeddedResource]:
         tool = self._tools.get(name)
         if tool is None:
             return [_error_response("unknown_tool", f"Unknown tool: {name}")]
@@ -118,7 +123,10 @@ class ToolRegistry:
                         return [gate]
                     arguments = {k: v for k, v in arguments.items() if k != CONFIRMATION_ARG}
                 result = await tool.handler(arguments, ctx)
-                return [_success_response(result)]
+                # Extra MCP content (e.g. a ui:// chart page) rides after the JSON,
+                # which stays first: clients and tests read response[0] as the answer.
+                attachments = result.pop(ATTACHMENTS_KEY, None) if isinstance(result, dict) else None
+                return [_success_response(result), *(attachments or [])]
             except ArgusError as exc:
                 logger.warning("tool_error", code=exc.code, error=str(exc))
                 return [_error_response(exc.code, str(exc))]
