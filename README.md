@@ -97,7 +97,7 @@ input schemas, enforced by
 | `check_magnet_file` | Read a magnet settings file (the consoles' CSV `Name,Prefix,Current,State`, or the legacy `.dat`) against the machine now (read-only) |
 | `create_magnet_set` | A magnet file into a save-and-restore configuration (if new) and a snapshot of the same name holding the file's values, as the signed-in user |
 | `apply_magnet_set` | Put magnet power supplies at a snapshot's set, one pretune step towards it, all to 0 A and STANDBY, or all ON - in the consoles' order, waiting on readbacks; always previewed supply by supply and confirmed |
-| `archive_magnet_pvs` | Ask the Archiver Appliance to archive a magnet set's PVs (those not archived yet) |
+| `archive_pvs` | Ask the Archiver Appliance to archive PVs (those not archived yet): a list, ChannelFinder name patterns, or a magnet set's PVs |
 
 ## Knowledge source: legacy YAML/RAG/Olog, or the ARGUS Knowledge Hub
 
@@ -139,7 +139,7 @@ Write tools (`set_pv`, `set_pv_value`, `restart_ioc`, `execute_procedure`,
 `create_logbook_entry`, `update_logbook_entry`,
 `create_saverestore_configuration`, `take_saverestore_snapshot`,
 `restore_saverestore_snapshot`, `create_magnet_set`, `apply_magnet_set`,
-`archive_magnet_pvs`) can be confirmed in two
+`archive_pvs`) can be confirmed in two
 steps, for clients that send `X-Argus-Confirm-Writes: true` (LibreChat's
 registrations do; it has no approval step of its own). The first call
 changes nothing: it returns `confirmation_required`, a plain-language
@@ -176,7 +176,7 @@ inventory) - is given as its text or as a path in git.
   outside a setpoint's control limits are refused before anything is
   confirmed. The writes go through the PV gateway as this server, not as
   the user.
-- `archive_magnet_pvs` uses the Archiver Appliance's management API
+- `archive_pvs` uses the Archiver Appliance's management API
   (`<ARCHIVER_BASE_URL>/mgmt/bpl`).
 
 An apply can take up to three phase timeouts (about 90 s by default): the

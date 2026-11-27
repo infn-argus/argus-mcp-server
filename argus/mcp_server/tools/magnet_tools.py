@@ -4,7 +4,7 @@ check_magnet_file          read-only: what a file says and what the machine is a
 create_magnet_set          WRITES save-and-restore: configuration (if new) + snapshot of the file's values
 apply_magnet_set           WRITES THE MACHINE: a snapshot's set, one pretune step towards it,
                            all to 0 A and STANDBY, or all ON
-archive_magnet_pvs         WRITES the archiver: archive the set's PVs
+archive_pvs                WRITES the archiver: archive PVs - a magnet set's, a list, or name patterns
 
 The machine writes confirm in two steps for every client (always_confirm), like a
 snapshot restore, and their preview lists each supply from where it is to where it goes.
@@ -239,32 +239,84 @@ async def _pretune_step(arguments: dict[str, Any], ctx: AppContext) -> dict[str,
 
 # --- archiver ------------------------------------------------------------------
 
+_MAX_ARCHIVE = 2000
+# Names gathered before the ones that do not answer are dropped (stale cameras can be half of them).
+_MAX_GATHERED = 6000
+
+
+def _strings(value: Any, field: str) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ValidationError(f"{field} must be a list of strings.")
+    return [v.strip() for v in value if v.strip()]
+
+
 async def _archive_pvs(arguments: dict[str, Any], ctx: AppContext) -> list[str]:
-    service = _service(ctx)
+    """Every PV the call names - a magnet set's, the listed ones and the patterns' matches - once each, in order."""
+    pvs: list[str] = []
     if arguments.get("configuration"):
-        _, bases = await service.magnets_of(str(arguments["configuration"]))
-        targets = [target_from_base(b, None, None) for b in bases]
+        _, bases = await _service(ctx).magnets_of(str(arguments["configuration"]))
+        pvs += set_pvs([target_from_base(b, None, None) for b in bases],
+                       include_readbacks=arguments.get("include_readbacks", True) is not False)
     elif arguments.get("file_text") or arguments.get("path"):
-        targets = (await _file(arguments, ctx))[0].targets
-    else:
-        raise ValidationError("Give the magnet file (file_text, or repo and path) or a save-and-restore configuration.")
-    return set_pvs(targets, include_readbacks=arguments.get("include_readbacks", True) is not False)
+        pvs += set_pvs((await _file(arguments, ctx))[0].targets,
+                       include_readbacks=arguments.get("include_readbacks", True) is not False)
+    pvs += _strings(arguments.get("pv_names"), "pv_names")
+    for pattern in _strings(arguments.get("patterns"), "patterns"):
+        matched, more = await ctx.operations_service.pv_names_matching(pattern, _MAX_GATHERED)
+        if more:
+            raise ValidationError(f"'{pattern}' matches more than {_MAX_GATHERED} PVs: narrow it (pick fields "
+                                  "with {a,b}, or fewer devices).")
+        if not matched:
+            raise ValidationError(f"No PV matches '{pattern}' in ChannelFinder: nothing was archived. Check the "
+                                  "pattern (* stays within one ':' level, ** crosses levels).")
+        pvs += matched
+    if not pvs:
+        raise ValidationError("Say which PVs: pv_names, patterns, a magnet file (file_text, or repo and path) or a "
+                              "save-and-restore configuration.")
+    unique = list(dict.fromkeys(pvs))
+    if len(unique) > _MAX_GATHERED:
+        raise ValidationError(f"{len(unique)} PVs is more than {_MAX_GATHERED}: narrow the request.")
+    return unique
+
+
+async def _answering(pvs: list[str], arguments: dict[str, Any], ctx: AppContext) -> tuple[list[str], list[str]]:
+    """The PVs to archive and those left out because they do not answer now (stale ChannelFinder
+    names, an IOC that is gone): the archiver would hold them forever waiting to connect."""
+    silent: set[str] = set()
+    if arguments.get("include_not_answering") is not True:
+        values = await ctx.operations_service.get_pvs(pvs, timeout=3.0)
+        silent = {v.name for v in values if v.status == "disconnected"}
+    live = [p for p in pvs if p not in silent]
+    if len(live) > _MAX_ARCHIVE:
+        raise ValidationError(f"{len(live)} answering PVs is more than {_MAX_ARCHIVE} in one request: split it "
+                              "(e.g. by camera or field) into several calls.")
+    return live, [p for p in pvs if p in silent]
+
+
+def _some(names: list[str], n: int = 30) -> str:
+    return ", ".join(names[:n]) + (f" ...and {len(names) - n} more" if len(names) > n else "")
 
 
 async def _describe_archive(arguments: dict[str, Any], ctx: AppContext) -> str:
-    pvs = await _archive_pvs(arguments, ctx)
-    status = await _service(ctx).archive_status(pvs)
+    pvs, silent = await _answering(await _archive_pvs(arguments, ctx), arguments, ctx)
+    left_out = (f" Left out, because they do not answer now: {len(silent)} PV(s) ({_some(silent, 10)}); "
+                "include_not_answering true archives them too." if silent else "")
+    status = await _service(ctx).archive_status(pvs) if pvs else {}
     todo = [p for p in pvs if not is_archived(status.get(p))]
     if not todo:
-        return f"All {len(pvs)} PVs are already archived: nothing to do."
-    shown = ", ".join(todo[:30]) + (f" ...and {len(todo) - 30} more" if len(todo) > 30 else "")
-    return (f"Ask the Archiver Appliance to start archiving {len(todo)} PV(s), with its default sampling: {shown}. "
-            f"{len(pvs) - len(todo)} are already archived.")
+        return f"All {len(pvs)} answering PVs are already archived: nothing to do.{left_out}"
+    return (f"Ask the Archiver Appliance to start archiving {len(todo)} PV(s), with its default sampling: "
+            f"{_some(todo)}. {len(pvs) - len(todo)} are already archived.{left_out}")
 
 
-async def _archive_magnet_pvs(arguments: dict[str, Any], ctx: AppContext) -> dict[str, Any]:
-    pvs = await _archive_pvs(arguments, ctx)
-    return {**await _service(ctx).archive(pvs), "next_step": _ASK_ABOUT_LOGBOOK}
+async def _archive(arguments: dict[str, Any], ctx: AppContext) -> dict[str, Any]:
+    pvs, silent = await _answering(await _archive_pvs(arguments, ctx), arguments, ctx)
+    result = await _service(ctx).archive(pvs) if pvs else {"already_archived": [], "requested": {}}
+    return {**result, **({"not_answering_left_out": silent} if silent else {}), "next_step": _ASK_ABOUT_LOGBOOK}
 
 
 TOOLS = [
@@ -344,22 +396,37 @@ TOOLS = [
         describe=_describe_apply,
     ),
     ToolDefinition(
-        name="archive_magnet_pvs",
+        name="archive_pvs",
         description=(
-            "WRITES the Archiver Appliance: asks it to archive the PVs of a magnet set (CURRENT_SP, CURRENT_RB, "
-            "STATE_SP, STATE_RB of each supply; setpoints only with include_readbacks false), from a magnet file or "
-            "a save-and-restore configuration. PVs already archived are left alone. Use only when the user asks to "
-            "archive them."
+            "WRITES the Archiver Appliance: asks it to start archiving PVs (with its default sampling), so their "
+            "history is kept. This is what 'archive these PVs' / 'put them in the archiver' means - not a "
+            "save-and-restore snapshot. Name them any way, combined: pv_names (a list), patterns (name patterns "
+            "looked up in ChannelFinder, e.g. 'EUAPS:CAM:*:Overlay1:*:{Use,PositionX,PositionY,SizeX,SizeY}_RBV' "
+            "for every camera's overlay placement), or a magnet set (a magnet file or a save-and-restore "
+            "configuration: CURRENT_SP, CURRENT_RB, STATE_SP, STATE_RB of each supply). At most 2000 PVs per call. "
+            "PVs already archived are left alone, and PVs that do not answer now (names left in ChannelFinder by "
+            "removed IOCs) are left out unless include_not_answering. Use only when the user asks to archive them."
         ),
         input_schema={
             "type": "object",
             "properties": {
+                "pv_names": {"type": "array", "items": {"type": "string"}, "maxItems": _MAX_ARCHIVE,
+                             "description": "PV names to archive."},
+                "patterns": {"type": "array", "items": {"type": "string"},
+                             "description": "PV name patterns, each looked up in ChannelFinder: * matches within "
+                             "one ':'-separated level, ** across levels, ? one character, {a,b} either, e.g. "
+                             "'EUAPS:CAM:*:{AcquireTime,ArrayRate}_RBV'. Pick the fields the user means: an area "
+                             "detector record has dozens. Read a few with get_pv's pattern first if unsure."},
                 **_FILE_PROPERTIES,
-                "configuration": {"type": "string", "description": "Instead of a file: the save-and-restore configuration whose magnets' PVs to archive."},
-                "include_readbacks": {"type": "boolean", "description": "Also the readbacks (default true)."},
+                "configuration": {"type": "string", "description": "A magnet set's save-and-restore configuration "
+                                  "whose supplies' PVs to archive."},
+                "include_readbacks": {"type": "boolean", "description": "Magnet sets only: also the readbacks "
+                                      "(default true)."},
+                "include_not_answering": {"type": "boolean", "description": "Also archive PVs that do not answer "
+                                          "now (default false: they are left out and listed)."},
             },
         },
-        handler=_archive_magnet_pvs,
+        handler=_archive,
         writes=True,
         describe=_describe_archive,
     ),

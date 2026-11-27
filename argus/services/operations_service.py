@@ -60,6 +60,11 @@ class MachineSummary:
 
 
 def _level_pattern(pattern: str) -> re.Pattern[str]:
+    return re.compile(_level_regex(pattern))
+
+
+def _level_regex(pattern: str) -> str:
+    """`*` within one ':' level, `**` across levels, `?` one character, `{a,b}` either."""
     out = []
     i = 0
     while i < len(pattern):
@@ -72,10 +77,19 @@ def _level_pattern(pattern: str) -> re.Pattern[str]:
         elif pattern[i] == "?":
             out.append("[^:]")
             i += 1
+        elif pattern[i] == "{" and "}" in pattern[i:]:
+            end = pattern.index("}", i)
+            out.append("(?:" + "|".join(_level_regex(alt) for alt in pattern[i + 1:end].split(",")) + ")")
+            i = end + 1
         else:
             out.append(re.escape(pattern[i]))
             i += 1
-    return re.compile("".join(out))
+    return "".join(out)
+
+
+def _channelfinder_query(pattern: str) -> str:
+    """The broad ChannelFinder name query for a pattern: its own * crosses levels, and it has no {a,b}."""
+    return re.sub(r"\{[^}]*\}", "*", pattern.replace("**", "*"))
 
 
 class OperationsService:
@@ -106,13 +120,14 @@ class OperationsService:
     async def pv_names_matching(self, pattern: str, limit: int) -> tuple[list[str], bool]:
         """PV names ChannelFinder lists for a name pattern, sorted; and whether there were
         more than `limit`. `*` matches within one ':'-separated level (EUAPS:CAM:*:ArrayRate_RBV
-        is each camera's rate, not every plugin's), `**` across levels, `?` one character.
+        is each camera's rate, not every plugin's), `**` across levels, `?` one character,
+        `{a,b}` either (EUAPS:CAM:*:{ArrayRate,AcquireTime}_RBV).
         ChannelFinder's own `*` crosses levels, so it is asked broadly and filtered here."""
         if self._channelfinder is None or not self._channelfinder.is_configured():
             raise ChannelFinderError(
                 "A PV pattern needs ChannelFinder (set CHANNELFINDER_BASE_URL): pass pv_names instead."
             )
-        channels = await self._channelfinder.find_channels(pattern.replace("**", "*"))
+        channels = await self._channelfinder.find_channels(_channelfinder_query(pattern))
         matcher = _level_pattern(pattern)
         names = sorted({c.name for c in channels if matcher.fullmatch(c.name)})
         return names[:limit], len(names) > limit

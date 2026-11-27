@@ -214,7 +214,7 @@ async def test_all_standby_and_all_on_act_on_every_magnet_of_a_configuration(app
 
 @respx.mock
 async def test_archiving_asks_only_for_the_pvs_not_archived_yet(app_context: AppContext):
-    ctx = _ctx(app_context, _supplies())
+    ctx = AppContext(**{**_ctx(app_context, _supplies()).__dict__, "operations_service": _Ops([])})
     pvs = [f"BTF:MAG:OCEME642:QUATM001:{f}" for f in ("CURRENT_SP", "CURRENT_RB", "STATE_SP", "STATE_RB")]
     pvs += [f"BTF:MAG:EASY:CHHTM001:{f}" for f in ("CURRENT_SP", "CURRENT_RB", "STATE_SP", "STATE_RB")]
     respx.get(f"{ARCH}/mgmt/bpl/getPVStatus").mock(return_value=httpx.Response(200, json=[
@@ -223,9 +223,9 @@ async def test_archiving_asks_only_for_the_pvs_not_archived_yet(app_context: App
         200, json=[{"pvName": r["pv"], "status": "Archive request submitted"} for r in json.loads(req.content)]))
     registry = build_registry()
     with confirm_writes_scope(True):
-        first = _payload(await registry.dispatch("archive_magnet_pvs", {"file_text": CSV}, ctx))
+        first = _payload(await registry.dispatch("archive_pvs", {"file_text": CSV}, ctx))
         assert "start archiving 6 PV(s)" in first["action"] and "2 are already archived" in first["action"]
-        done = _payload(await registry.dispatch("archive_magnet_pvs", {"file_text": CSV, "confirmation_id": first["confirmation_id"]}, ctx))
+        done = _payload(await registry.dispatch("archive_pvs", {"file_text": CSV, "confirmation_id": first["confirmation_id"]}, ctx))
     asked = [r["pv"] for r in json.loads(archive.calls[0].request.content)]
     assert len(asked) == 6 and not any(p.endswith("CURRENT_RB") for p in asked)
     assert len(done["already_archived"]) == 2
@@ -297,3 +297,64 @@ async def test_a_snapshot_that_cannot_be_saved_says_the_configuration_exists_and
     assert answer["status"] == "error"
     assert f"/BTF_CONF/pTLp (id {CONFIG}) was created" in answer["message"]
     assert "Do not take a live snapshot" in answer["message"] and "reuses the configuration" in answer["message"]
+
+
+class _Ops:
+    def __init__(self, names, silent=()):
+        self.names, self.asked, self.silent = names, [], set(silent)
+
+    async def get_pvs(self, names, timeout=5.0):
+        from argus.providers.epics.models import PVValue
+
+        return [PVValue(name=n, value=None if n in self.silent else 1,
+                        status="disconnected" if n in self.silent else "NO_ALARM") for n in names]
+
+    async def pv_names_matching(self, pattern, limit):
+        self.asked.append(pattern)
+        from argus.services.operations_service import _level_pattern
+
+        hits = sorted(n for n in self.names if _level_pattern(pattern).fullmatch(n))
+        return hits[:limit], len(hits) > limit
+
+
+@respx.mock
+async def test_archiving_any_pvs_by_list_and_pattern(app_context: AppContext):
+    cams = [f"EUAPS:CAM:FI{i}-CAM-01:Overlay1:1:SizeX_RBV" for i in (1, 8)]
+    stale = "EUAPS:CAM:CAM03:Overlay1:1:SizeX_RBV"
+    ops = _Ops([*cams, stale, "EUAPS:CAM:FI1-CAM-01:Overlay1:1:SizeX", "EUAPS:CAM:FI1-CAM-01:ArrayRate_RBV"],
+               silent=[stale])
+    ctx = AppContext(**{**_ctx(app_context, _supplies()).__dict__, "operations_service": ops})
+    respx.get(f"{ARCH}/mgmt/bpl/getPVStatus").mock(side_effect=lambda req: httpx.Response(200, json=[
+        {"pvName": p, "status": "Not being archived"} for p in req.url.params["pv"].split(",")]))
+    archive = respx.post(f"{ARCH}/mgmt/bpl/archivePV").mock(side_effect=lambda req: httpx.Response(
+        200, json=[{"pvName": r["pv"], "status": "Archive request submitted"} for r in json.loads(req.content)]))
+    args = {"patterns": ["EUAPS:CAM:*:Overlay1:*:*_RBV"],
+            "pv_names": ["EUAPS:CAM:FI1-CAM-01:ArrayRate_RBV", cams[0]]}
+    registry = build_registry()
+    with confirm_writes_scope(True):
+        first = _payload(await registry.dispatch("archive_pvs", dict(args), ctx))
+        assert "start archiving 3 PV(s)" in first["action"], first
+        assert "do not answer now: 1 PV(s) (EUAPS:CAM:CAM03" in first["action"]
+        done = _payload(await registry.dispatch("archive_pvs", {**args, "confirmation_id": first["confirmation_id"]}, ctx))
+    assert sorted(r["pv"] for r in json.loads(archive.calls[0].request.content)) == sorted(
+        [*cams, "EUAPS:CAM:FI1-CAM-01:ArrayRate_RBV"])
+    assert len(done["requested"]) == 3 and done["not_answering_left_out"] == [stale]
+
+
+async def test_archiving_refuses_a_pattern_matching_nothing_or_no_pvs(app_context: AppContext):
+    ctx = AppContext(**{**_ctx(app_context, _supplies()).__dict__, "operations_service": _Ops([])})
+    registry = build_registry()
+    empty = _payload(await registry.dispatch("archive_pvs", {"patterns": ["NOPE:*"]}, ctx))
+    assert empty["status"] == "error" and "No PV matches" in empty["message"]
+    none = _payload(await registry.dispatch("archive_pvs", {}, ctx))
+    assert none["status"] == "error" and "pv_names" in none["message"]
+
+
+def test_level_pattern_alternation():
+    from argus.services.operations_service import _channelfinder_query, _level_pattern
+
+    pat = "EUAPS:CAM:*:Overlay1:*:{SizeX,PositionX}_RBV"
+    assert _level_pattern(pat).fullmatch("EUAPS:CAM:FI1-CAM-01:Overlay1:3:SizeX_RBV")
+    assert _level_pattern(pat).fullmatch("EUAPS:CAM:FI1-CAM-01:Overlay1:3:PositionX_RBV")
+    assert not _level_pattern(pat).fullmatch("EUAPS:CAM:FI1-CAM-01:Overlay1:3:SizeY_RBV")
+    assert _channelfinder_query(pat) == "EUAPS:CAM:*:Overlay1:*:*_RBV"

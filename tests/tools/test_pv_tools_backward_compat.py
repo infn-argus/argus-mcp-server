@@ -127,7 +127,7 @@ async def test_tool_count_is_within_high_level_target_band():
     # a save-and-restore configuration and snapshot of the file's values),
     # apply_magnet_set (put supplies at a set, a pretune step, all standby or
     # all on, in the consoles' order with readback waits: one tool, since these
-    # share the preview and the always-on confirmation) and archive_magnet_pvs
+    # share the preview and the always-on confirmation) and archive_pvs
     # (the Archiver Appliance's management side, a distinct service). +2 more
     # (36): inspect_pod and inspect_node - cluster bottleneck diagnosis
     # (Multus networks, events, node conditions, Prometheus per-interface
