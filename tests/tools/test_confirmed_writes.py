@@ -99,11 +99,12 @@ async def test_a_confirmed_logbook_entry_is_posted_once_as_the_signed_in_user(ap
         return_value=httpx.Response(200, json={"id": 9, "title": "Beam lost", "description": "x", "owner": "jdoe"})
     )
     args = {"title": "Beam lost", "text": "x", "logbooks": ["Operations"]}
+    respx.get("http://olog.test/Olog/logbooks").mock(return_value=httpx.Response(200, json=[{"name": "operations"}]))
     registry = build_registry()
     with confirm_writes_scope(True), caller_token_scope("eyJuser"):
         first = _payload(await registry.dispatch("create_logbook_entry", dict(args), ctx))
         assert first["status"] == "confirmation_required" and not route.called
-        assert "NEW entry to the Operations logbook" in first["action"]
+        assert "NEW entry to the operations logbook" in first["action"]
         done = _payload(
             await registry.dispatch("create_logbook_entry", {**args, "confirmation_id": first["confirmation_id"]}, ctx)
         )
@@ -116,6 +117,7 @@ async def test_a_confirmed_logbook_entry_is_posted_once_as_the_signed_in_user(ap
 async def test_another_user_cannot_use_someone_elses_confirmation(app_context: AppContext):
     ctx = _with_olog(app_context)
     route = respx.put("http://olog.test/Olog/logs").mock(return_value=httpx.Response(200, json={"id": 9}))
+    respx.get("http://olog.test/Olog/logbooks").mock(return_value=httpx.Response(200, json=[{"name": "operations"}]))
     args = {"title": "t", "text": "x", "logbooks": ["Operations"]}
     registry = build_registry()
     with confirm_writes_scope(True):

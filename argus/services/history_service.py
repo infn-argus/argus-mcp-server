@@ -72,6 +72,11 @@ class HistoryService:
     ) -> LogbookEntry:
         return await self._logbook.create_entry(title, text, logbooks, tags=tags)
 
+    async def check_logbook_write(self, logbooks: list[str] | None) -> list[str] | None:
+        """Before a write is previewed: a valid sign-in, and the logbook names as Olog spells them."""
+        self._logbook.require_writer()
+        return await self._logbook.resolve_logbooks(logbooks) if logbooks else logbooks
+
     async def get_logbook_entry(self, entry_id: str | int) -> LogbookEntry:
         return await self._logbook.get_entry(entry_id)
 

@@ -21,11 +21,13 @@ from typing import ClassVar
 import httpx
 
 from argus.config.settings import LogbookSettings
+from argus.core.jwt_claims import expired as token_expired
 from argus.core.request_context import current_caller_token
 from argus.providers.base import ProviderHealth, ProviderStatus
 from argus.providers.logbook.exceptions import (
     LogbookQueryError,
     LogbookRefusedError,
+    LogbookSignInError,
     LogbookTimeoutError,
     LogbookUnavailableError,
     LogbookUnconfiguredError,
@@ -54,6 +56,44 @@ class LogbookProvider:
             return httpx.AsyncClient(timeout=timeout, headers={"Authorization": f"Bearer {token}"})
         return httpx.AsyncClient(timeout=timeout, auth=self._auth())
 
+    def require_writer(self) -> None:
+        """Stop a write that could only reach Olog without a valid sign-in, saying why.
+
+        LibreChat forwards the user's INFN AAI access token, taken when the
+        user's message arrived, with each call while it is valid, and nothing
+        at all once it has expired - which happens within one long answer,
+        since AAI tokens last minutes. A new message carries a renewed one.
+        Sent on without credentials, Olog would just answer 403."""
+        token = current_caller_token()
+        if token and token_expired(token):
+            raise LogbookSignInError(
+                "The user's sign-in token expired during this answer, so the logbook would refuse this. "
+                "Nothing was written. Do not retry now: tell the user, and ask them to send the request again "
+                "in a new message (that renews the sign-in; if it keeps failing, reload the page)."
+            )
+        if not token and self._auth() is None:
+            raise LogbookSignInError(
+                "No valid sign-in reached ARGUS with this call (the user's token has probably expired during this "
+                "answer), and the logbook only accepts entries from signed-in users. Nothing was written. Do not "
+                "retry now: tell the user, and ask them to send the request again in a new message (that renews "
+                "the sign-in; if it keeps failing, reload the page)."
+            )
+
+    async def resolve_logbooks(self, names: list[str], *, timeout: float = 5.0) -> list[str]:
+        """The logbook names as Olog spells them ('Operations' -> 'operations'); an unknown one is refused
+        here, with the valid names, before anything is sent. Unchanged when Olog's list can't be read."""
+        known = await self.list_logbooks(timeout=timeout)
+        if not known:
+            return list(names)
+        by_lower = {k.lower(): k for k in known}
+        unknown = [n for n in names if n.strip().lower() not in by_lower]
+        if unknown:
+            raise LogbookRefusedError(
+                f"No logbook named {', '.join(repr(n) for n in unknown)} here. The logbooks are: "
+                f"{', '.join(known)}. Ask the user which one if it is not clear."
+            )
+        return list(dict.fromkeys(by_lower[n.strip().lower()] for n in names))
+
     async def _refusal(self, exc: httpx.HTTPStatusError, action: str, timeout: float) -> LogbookRefusedError:
         """Olog's own reason for refusing, with the valid logbook names when a name was the problem."""
         try:
@@ -64,7 +104,11 @@ class LogbookProvider:
         status = exc.response.status_code
         message = f"Olog refused to {action} (HTTP {status}): {reason}"
         if status == 401 or status == 403:
-            message += " - the signed-in user (or ARGUS's configured account) may not do this in Olog."
+            if current_caller_token() or self._auth():
+                message += " - the signed-in user (or ARGUS's configured account) may not do this in Olog."
+            else:
+                message += (" - no sign-in reached ARGUS with this call (it has probably expired): ask the "
+                            "user to send the request again in a new message.")
         if "logbook" in reason.lower() and "invalid" in reason.lower():
             names = await self.list_logbooks(timeout=timeout)
             if names:
@@ -160,6 +204,8 @@ class LogbookProvider:
         self, title: str, text: str, logbooks: list[str], tags: list[str] | None = None, *, timeout: float = 5.0
     ) -> LogbookEntry:
         self._require_configured()
+        self.require_writer()
+        logbooks = await self.resolve_logbooks(logbooks, timeout=timeout)
         body = {
             "title": title,
             "description": text,
@@ -226,6 +272,9 @@ class LogbookProvider:
         involved, so with a forwarded user token this is that person's edit.
         """
         self._require_configured()
+        self.require_writer()
+        if logbooks is not None:
+            logbooks = await self.resolve_logbooks(logbooks, timeout=timeout)
         olog_id = olog_entry_id(entry_id)
         try:
             async with self._client(timeout) as client:

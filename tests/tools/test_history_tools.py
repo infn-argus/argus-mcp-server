@@ -3,6 +3,7 @@ import json
 import httpx
 import respx
 
+from argus.core.request_context import caller_token_scope
 from argus.mcp_server.server import build_registry
 
 
@@ -27,12 +28,14 @@ async def test_create_logbook_entry_missing_logbooks_returns_validation_error(ap
 
 
 async def test_create_logbook_entry_unconfigured_returns_structured_error(app_context):
+    respx.get("http://olog.test/Olog/logbooks").mock(return_value=httpx.Response(200, json=[{"name": "operations"}]))
     registry = build_registry()
-    response = await registry.dispatch(
-        "create_logbook_entry",
-        {"title": "t", "text": "body", "logbooks": ["operations"]},
-        app_context,
-    )
+    with caller_token_scope("eyJuser"):
+        response = await registry.dispatch(
+            "create_logbook_entry",
+            {"title": "t", "text": "body", "logbooks": ["operations"]},
+            app_context,
+        )
     payload = json.loads(response[0].text)
     assert payload["status"] == "error"
     assert payload["code"] == "logbook_unconfigured"
@@ -54,12 +57,14 @@ async def test_create_logbook_entry_success(app_context):
             },
         )
     )
+    respx.get("http://olog.test/Olog/logbooks").mock(return_value=httpx.Response(200, json=[{"name": "operations"}]))
     registry = build_registry()
-    response = await registry.dispatch(
-        "create_logbook_entry",
-        {"title": "t", "text": "body", "logbooks": ["operations"]},
-        app_context,
-    )
+    with caller_token_scope("eyJuser"):
+        response = await registry.dispatch(
+            "create_logbook_entry",
+            {"title": "t", "text": "body", "logbooks": ["operations"]},
+            app_context,
+        )
     payload = json.loads(response[0].text)
     assert payload["status"] == "success"
     assert payload["title"] == "t"

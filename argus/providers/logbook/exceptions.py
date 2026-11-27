@@ -27,3 +27,9 @@ class LogbookRefusedError(LogbookError):
     """Olog answered, and refused the request (4xx): a bad logbook name, no permission, ..."""
 
     code = "logbook_refused"
+
+
+class LogbookSignInError(LogbookError):
+    """A write that would reach Olog without a valid sign-in (the user's token expired or is missing)."""
+
+    code = "sign_in_expired"

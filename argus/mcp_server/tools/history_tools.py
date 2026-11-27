@@ -330,8 +330,11 @@ async def _update_logbook_entry(arguments: dict[str, Any], ctx: AppContext) -> d
     return dataclasses.asdict(entry)
 
 
-def _describe_create(arguments: dict[str, Any]) -> str:
-    logbooks = ", ".join(arguments.get("logbooks") or []) or "?"
+async def _describe_create(arguments: dict[str, Any], ctx: AppContext) -> str:
+    names = arguments.get("logbooks")
+    if isinstance(names, list) and names:
+        names = await ctx.history_service.check_logbook_write(names)
+    logbooks = ", ".join(names or []) or "?"
     tags = f", tags {', '.join(arguments['tags'])}" if arguments.get("tags") else ""
     return (
         f"Post a NEW entry to the {logbooks} logbook{tags}, under your name: "
@@ -339,7 +342,12 @@ def _describe_create(arguments: dict[str, Any]) -> str:
     )
 
 
-def _describe_update(arguments: dict[str, Any]) -> str:
+async def _describe_update(arguments: dict[str, Any], ctx: AppContext) -> str:
+    names = arguments.get("logbooks")
+    if isinstance(names, list) and names:
+        arguments = {**arguments, "logbooks": await ctx.history_service.check_logbook_write(names)}
+    else:
+        await ctx.history_service.check_logbook_write(None)
     parts = [f"{k} → {arguments[k]!r}" for k in ("title", "text", "logbooks", "tags") if arguments.get(k) is not None]
     return f"Change logbook entry {arguments.get('entry_id')} under your name (the old version is kept as history): " + "; ".join(parts) + "."
 
