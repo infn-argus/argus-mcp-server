@@ -75,3 +75,26 @@ def test_a_confirmation_without_any_sign_in_says_the_sign_in_expired():
     issued = store.issue("create_logbook_entry", {"title": "t"}, caller_key(_jwt(time.time() + 30), None))
     problem = store.redeem(issued, "create_logbook_entry", {"title": "t"}, caller_key(None, None))
     assert problem and "expired" in problem and "another user" not in problem
+
+
+@respx.mock
+async def test_a_knowledge_hub_server_previews_a_logbook_entry_through_olog(app_context):
+    # The hubs run LOGBOOK_BACKEND=knowledge_hub: reads from the hub, writes (and their checks) to Olog.
+    from argus.core.context import AppContext
+    from argus.core.request_context import confirm_writes_scope
+    from argus.mcp_server.server import build_registry
+    from argus.providers.logbook.knowledge_hub import KnowledgeHubLogbookProvider
+    from argus.services.history_service import HistoryService
+
+    hub_logbook = KnowledgeHubLogbookProvider(client=None, writer=_provider())
+    ctx = AppContext(**{**app_context.__dict__, "logbook": hub_logbook, "history_service": HistoryService(
+        archiver=app_context.archiver, logbook=hub_logbook, elastic=app_context.elastic, loki=app_context.loki)})
+    _logbooks()
+    args = {"title": "t", "text": "x", "logbooks": ["Operations"]}
+    with confirm_writes_scope(True), caller_token_scope(_jwt(time.time() + 300)):
+        first = json.loads((await build_registry().dispatch("create_logbook_entry", dict(args), ctx))[0].text)
+    assert first["status"] == "confirmation_required", first
+    assert "operations logbook" in first["action"]
+    with confirm_writes_scope(True):
+        expired = json.loads((await build_registry().dispatch("create_logbook_entry", dict(args), ctx))[0].text)
+    assert expired["code"] == "sign_in_expired"
