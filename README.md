@@ -71,7 +71,8 @@ input schemas, enforced by
 | `device_status` | Quick health snapshot: live PVs + pod status |
 | `diagnose_device` | Full cross-system diagnostic report, one call |
 | `beamline_status` | Aggregate status across a group of devices |
-| `get_history` | Historical trend of a PV (Archiver Appliance), down-sampled by the archiver to at most `max_points` time bins (mean/min/max/count) - chart-ready for any range |
+| `get_history` | Historical trend of a PV (Archiver Appliance), down-sampled by the archiver to at most `max_points` time bins (mean/min/max/count) - chart-ready for any range; `compare_with` adds PVs, and `viewer_url` opens them all in the archiver's own viewer |
+| `plot_pv_history` | Charts of archived PVs computed and drawn by ARGUS - trend, difference (A-B), scatter (correlation, fit), histogram (percentiles), fft (dominant periods) - shown inline in the chat as an interactive page (MCP `ui://` resource), with the numbers behind it |
 | `get_alarm_history` | Recent alarm-tagged logbook entries for a device |
 | `create_logbook_entry` | Post a new entry to the operations logbook (as the signed-in user, when their token is forwarded) |
 | `get_logbook_entry` | Read one logbook entry straight from Olog, by id or hub code (`OLOG-SPARC-1234`) |

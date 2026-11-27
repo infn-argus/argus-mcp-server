@@ -107,9 +107,10 @@ class ArchiverApplianceProvider:
         binned = any(s.count is not None for s in samples)
         return ArchiverSeries(pv_name=pv_name, samples=samples, units=units, binned=binned)
 
-    def viewer_url(self, pv_name: str, start: datetime, end: datetime) -> str | None:
-        """Link to the appliance's own web viewer (archViewer) for this PV and range:
-        interactive, full resolution, opens instantly in the user's browser."""
+    def viewer_url(self, pv_name: str | list[str], start: datetime, end: datetime) -> str | None:
+        """Link to the appliance's own web viewer (archViewer) for these PVs and range:
+        interactive, full resolution, opens instantly in the user's browser. Several
+        PVs share one chart (one axis per unit)."""
         if not self.is_configured():
             return None
 
@@ -117,7 +118,8 @@ class ArchiverApplianceProvider:
             ts = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
             return ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
-        query = urlencode({"pv": pv_name, "from": iso(start), "to": iso(end)}, safe=":")
+        pvs = [pv_name] if isinstance(pv_name, str) else list(pv_name)
+        query = urlencode([("pv", pv) for pv in pvs] + [("from", iso(start)), ("to", iso(end))], safe=":")
         return f"{self._settings.base_url.rstrip('/')}/retrieval/ui/viewer/archViewer.html?{query}"
 
     async def get_latest(self, pv_name: str, *, timeout: float = 5.0) -> ArchiverSample | None:
