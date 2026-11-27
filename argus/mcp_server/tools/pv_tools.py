@@ -23,6 +23,30 @@ _PV_NAME_SCHEMA = {
     "required": ["pv_name"],
 }
 
+_MAX_MANY = 500
+_MAX_ARRAY_SHOWN = 16
+
+_GET_PV_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "pv_name": {"type": "string", "description": "One PV to read."},
+        "pv_names": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": _MAX_MANY,
+            "description": f"Several PVs to read in one call (up to {_MAX_MANY}), e.g. the same field on every "
+            "camera, or a device's setpoints and readbacks. Use this instead of one call per PV.",
+        },
+        "pattern": {
+            "type": "string",
+            "description": "Read every PV whose name matches this pattern (looked up in ChannelFinder): * "
+            "matches within one ':' level, ** across levels, ? one character. E.g. "
+            "'EUAPS:CAM:*:ArrayRate_RBV' (each camera's frame rate) or "
+            f"'EUAPS:CAM:*:Overlay1:*:SizeX_RBV' (every overlay's width). Up to {_MAX_MANY} matches.",
+        },
+    },
+}
+
 # Verbatim copy of the original SET_PV_VALUE inputSchema (server_by_stdio.py),
 # kept byte-identical so existing clients don't need to change.
 _LEGACY_SET_PV_SCHEMA = {
@@ -62,7 +86,63 @@ def _require_pv_name(arguments: dict[str, Any]) -> str:
     return pv_name
 
 
+def _compact(value: Any) -> Any:
+    """Keep the answer small: long arrays (waveforms, images) are summarised."""
+    if hasattr(value, "tolist") and not isinstance(value, (str, bytes)):
+        value = value.tolist()
+    if isinstance(value, (list, tuple)) and len(value) > _MAX_ARRAY_SHOWN:
+        return {"array_length": len(value), "first": list(value[:_MAX_ARRAY_SHOWN])}
+    if isinstance(value, float):
+        return float(f"{value:.6g}")
+    return value
+
+
+async def _get_many(arguments: dict[str, Any], ctx: AppContext) -> dict[str, Any]:
+    names = arguments.get("pv_names")
+    pattern = arguments.get("pattern")
+    result: dict[str, Any] = {}
+    if pattern is not None:
+        if names is not None or arguments.get("pv_name"):
+            raise ValidationError("Give one of pv_name, pv_names or pattern.")
+        if not isinstance(pattern, str) or not pattern.strip() or pattern.strip("*?: ") == "":
+            raise ValidationError("pattern must name part of the PVs, e.g. 'EUAPS:CAM:*:ArrayRate_RBV'.")
+        names, truncated = await ctx.operations_service.pv_names_matching(pattern.strip(), _MAX_MANY)
+        result["pattern"] = pattern.strip()
+        if truncated:
+            result["truncated"] = f"More than {_MAX_MANY} PVs match: only the first {_MAX_MANY} were read. Narrow the pattern."
+        if not names:
+            result.update(count=0, values={}, note="No PV in ChannelFinder matches this pattern.")
+            return result
+    else:
+        if arguments.get("pv_name"):
+            raise ValidationError("Give one of pv_name, pv_names or pattern.")
+        if not isinstance(names, list) or not names or not all(isinstance(n, str) and n.strip() for n in names):
+            raise ValidationError("pv_names must be a non-empty list of PV names.")
+        if len(names) > _MAX_MANY:
+            raise ValidationError(f"At most {_MAX_MANY} PVs per call.")
+        names = list(dict.fromkeys(n.strip() for n in names))
+
+    values = await ctx.operations_service.get_pvs(names)
+    read = {v.name: _compact(v.value) for v in values if v.status != "disconnected"}
+    alarms = {v.name: v.severity for v in values
+              if v.status != "disconnected" and v.severity not in (None, "0", "NO_ALARM", "None")}
+    disconnected = [v.name for v in values if v.status == "disconnected"]
+    result.update(count=len(names), values=read)
+    if alarms:
+        result["alarms"] = alarms
+    if disconnected:
+        result["not_answering"] = disconnected
+        if pattern is not None:
+            result["note"] = (
+                "not_answering PVs are listed in ChannelFinder but don't answer now: usually names left from "
+                "an IOC that was renamed or stopped."
+            )
+    return result
+
+
 async def _get_pv(arguments: dict[str, Any], ctx: AppContext) -> dict[str, Any]:
+    if arguments.get("pv_names") is not None or arguments.get("pattern") is not None:
+        return await _get_many(arguments, ctx)
     pv_name = _require_pv_name(arguments)
     result = await ctx.operations_service.get_pv(pv_name)
     return {
@@ -110,8 +190,13 @@ def _describe_set_pv(arguments: dict[str, Any]) -> str:
 TOOLS = [
     ToolDefinition(
         name="get_pv",
-        description="Get the current value of a PV, including timestamp and alarm severity.",
-        input_schema=_PV_NAME_SCHEMA,
+        description=(
+            "Read live PV values. One PV (pv_name: value, timestamp, alarm severity), a list (pv_names, up to "
+            f"{_MAX_MANY}) or every PV matching a name pattern (pattern, e.g. 'EUAPS:CAM:*:ArrayRate_RBV'), "
+            "in one call. Whenever several PVs are needed - the same field on many devices, many fields of "
+            "one device - read them together, never one call per PV."
+        ),
+        input_schema=_GET_PV_SCHEMA,
         handler=_get_pv,
     ),
     ToolDefinition(
