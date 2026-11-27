@@ -138,4 +138,8 @@ async def test_tool_count_is_within_high_level_target_band():
     # devices, run inside the IOC's own pod (private device networks are only
     # reachable from there) and from ARGUS, compared. A network question about
     # the device, not about the pod (inspect_pod) or the node (inspect_node).
-    assert 15 <= len(registry.list_tools()) <= 37
+    # +2 more (39): find_leftover_iocs and remove_leftover_ioc - IOC workloads
+    # nothing manages any more (ArgoCD app gone, or deployed by hand), which
+    # hold devices the current IOC needs; the removal is a separate, always-
+    # confirmed write so the read-only report can be run freely.
+    assert 15 <= len(registry.list_tools()) <= 39

@@ -35,6 +35,7 @@ from argus.providers.saverestore.saverestore import SaveRestoreProvider
 from argus.services.beamline_inventory_service import BeamlineInventoryService
 from argus.services.cluster_service import ClusterService
 from argus.services.connectivity_service import ConnectivityService
+from argus.services.leftover_service import LeftoverService
 from argus.services.device_service import DeviceService
 from argus.services.diagnostics_service import DiagnosticsService
 from argus.services.documentation_service import DocumentationService
@@ -91,6 +92,8 @@ class AppContext:
     cluster_service: ClusterService | None = None
     # check_connectivity: ping/TCP/GigE probes from ARGUS and from inside an IOC's pod.
     connectivity_service: ConnectivityService | None = None
+    # find_leftover_iocs / remove_leftover_ioc: IOC workloads nothing manages any more.
+    leftover_service: LeftoverService | None = None
 
     @classmethod
     def build(cls, settings: Settings | None = None) -> AppContext:
@@ -184,6 +187,12 @@ class AppContext:
             knowledge=knowledge_service,
             default_namespace=settings.kubernetes.default_namespace,
         )
+        leftover_service = LeftoverService(
+            kubernetes=kubernetes,
+            knowledge=knowledge_service,
+            default_namespace=settings.kubernetes.default_namespace,
+            argocd_namespace=settings.kubernetes.argocd_namespace,
+        )
 
         return cls(
             settings=settings,
@@ -217,4 +226,5 @@ class AppContext:
             prometheus=prometheus,
             cluster_service=cluster_service,
             connectivity_service=connectivity_service,
+            leftover_service=leftover_service,
         )

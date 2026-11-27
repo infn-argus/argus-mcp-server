@@ -91,8 +91,18 @@ class ConnectivityReport:
         }
 
 
+# Config values that match the host pattern but are files (sparcmag.csv, st.cmd...).
+_FILE_SUFFIXES = {
+    "csv", "txt", "json", "yaml", "yml", "db", "cmd", "xml", "bob", "opi", "py", "sh", "template",
+    "substitutions", "req", "proto", "dbd", "ini", "cfg", "conf", "log",
+}
+
+
 def _looks_like_address(value: Any) -> bool:
-    return isinstance(value, str) and bool(_ADDRESS_RE.match(value.strip()))
+    if not isinstance(value, str) or not _ADDRESS_RE.match(value.strip()):
+        return False
+    last = value.strip().rsplit(".", 1)[-1].lower()
+    return last.isdigit() or last not in _FILE_SUFFIXES
 
 
 def _port(value: Any) -> int | None:

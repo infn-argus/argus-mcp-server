@@ -69,6 +69,30 @@ _CHECK_CONNECTIVITY_SCHEMA = {
 }
 
 
+_FIND_LEFTOVERS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "namespace": {"type": "string", "description": "Namespace (the beamline, e.g. sparc). Defaults to the configured one."},
+    },
+    "required": [],
+}
+
+_REMOVE_LEFTOVER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "description": "The leftover workload's name, as find_leftover_iocs reports it."},
+        "kind": {"type": "string", "enum": ["StatefulSet", "Deployment"], "description": "Default StatefulSet."},
+        "namespace": {"type": "string", "description": "Namespace. Defaults to the configured one."},
+        "action": {
+            "type": "string",
+            "enum": ["scale_to_zero", "delete"],
+            "description": "scale_to_zero (default): stop its pods, reversible. delete: remove the workload.",
+        },
+    },
+    "required": ["name"],
+}
+
+
 def _window(arguments: dict[str, Any]) -> int:
     value = arguments.get("window_minutes", 5)
     if not isinstance(value, int) or isinstance(value, bool):
@@ -127,6 +151,43 @@ async def _check_connectivity(arguments: dict[str, Any], ctx: AppContext) -> dic
     return report.to_dict()
 
 
+async def _find_leftover_iocs(arguments: dict[str, Any], ctx: AppContext) -> dict[str, Any]:
+    service = ctx.leftover_service
+    if service is None:
+        raise ValidationError("Leftover detection is not available in this deployment.")
+    report = await service.find(arguments.get("namespace"))
+    return report.to_dict()
+
+
+def _remove_args(arguments: dict[str, Any]) -> tuple[str, str, str]:
+    name = arguments.get("name")
+    if not name or not isinstance(name, str):
+        raise ValidationError("name is required.")
+    kind = arguments.get("kind", "StatefulSet")
+    action = arguments.get("action", "scale_to_zero")
+    if kind not in ("StatefulSet", "Deployment"):
+        raise ValidationError("kind must be StatefulSet or Deployment.")
+    if action not in ("scale_to_zero", "delete"):
+        raise ValidationError("action must be scale_to_zero or delete.")
+    return name, kind, action
+
+
+async def _remove_leftover_ioc(arguments: dict[str, Any], ctx: AppContext) -> dict[str, Any]:
+    service = ctx.leftover_service
+    if service is None:
+        raise ValidationError("Leftover removal is not available in this deployment.")
+    name, kind, action = _remove_args(arguments)
+    return await service.remove(name, namespace=arguments.get("namespace"), kind=kind, action=action)
+
+
+def _describe_remove_leftover(arguments: dict[str, Any]) -> str:
+    name, kind, action = _remove_args(arguments)
+    ns = f" in {arguments['namespace']}" if arguments.get("namespace") else ""
+    if action == "delete":
+        return f"Delete the leftover {kind} {name}{ns}: its pods stop and the workload is gone (not undoable)."
+    return f"Scale the leftover {kind} {name}{ns} to 0: its pods stop and release their devices (undo: scale back)."
+
+
 TOOLS = [
     ToolDefinition(
         name="inspect_pod",
@@ -165,5 +226,33 @@ TOOLS = [
         ),
         input_schema=_CHECK_CONNECTIVITY_SCHEMA,
         handler=_check_connectivity,
+    ),
+    ToolDefinition(
+        name="find_leftover_iocs",
+        description=(
+            "Find IOC deployments that keep running although nothing manages them any more - typically an IOC "
+            "renamed or removed in the beamline config whose old StatefulSet was never deleted. Reports each "
+            "leftover (its ArgoCD app no longer exists, or it was deployed by hand and isn't in the config), "
+            "whether it still runs, and - critical - when it uses the same device address as a current IOC, so "
+            "the two compete and the current IOC can't get control (a GigE camera, a serial port, a power "
+            "supply). Use it when an IOC can't connect to a device that answers, or as routine hygiene. "
+            "Read-only; offer remove_leftover_ioc for the ones it marks removable."
+        ),
+        input_schema=_FIND_LEFTOVERS_SCHEMA,
+        handler=_find_leftover_iocs,
+    ),
+    ToolDefinition(
+        name="remove_leftover_ioc",
+        description=(
+            "Stop or delete one leftover IOC workload that find_leftover_iocs reported as removable. "
+            "scale_to_zero (default) stops its pods and is reversible; delete removes the StatefulSet/Deployment. "
+            "Re-checks at run time and refuses anything managed by an existing ArgoCD app, present in the "
+            "beamline config, or that can't be verified."
+        ),
+        input_schema=_REMOVE_LEFTOVER_SCHEMA,
+        handler=_remove_leftover_ioc,
+        writes=True,
+        always_confirm=True,
+        describe=_describe_remove_leftover,
     ),
 ]

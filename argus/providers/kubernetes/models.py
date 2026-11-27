@@ -93,3 +93,19 @@ class NodeInfo:
     labels: dict[str, str] = field(default_factory=dict)
     capacity: dict[str, str] = field(default_factory=dict)
     allocatable: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class IocWorkload:
+    """A StatefulSet/Deployment rendered by epik8s' ioc-chart (label app.kubernetes.io/name=ioc-chart)."""
+
+    kind: str  # "StatefulSet" | "Deployment"
+    name: str
+    namespace: str
+    instance: str  # app.kubernetes.io/instance: the IOC name it was deployed as
+    replicas: int
+    ready_replicas: int
+    created: datetime | None
+    # ArgoCD's tracking-id annotation "<app>:<group>/<kind>:<ns>/<name>": the
+    # Application that manages it. None = not deployed by ArgoCD (kubectl/helm by hand).
+    argocd_app: str | None = None

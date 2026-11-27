@@ -23,6 +23,7 @@ from argus.providers.kubernetes.exceptions import (
 )
 from argus.providers.kubernetes.models import (
     ContainerDetail,
+    IocWorkload,
     KubeEvent,
     NodeInfo,
     NodePod,
@@ -33,6 +34,10 @@ from argus.providers.kubernetes.models import (
 
 # Multus records every network a pod got, with its interface and IPs, here.
 NETWORK_STATUS_ANNOTATION = "k8s.v1.cni.cncf.io/network-status"
+
+# ioc-chart's chart name label, and ArgoCD's resource-tracking annotation.
+IOC_CHART_SELECTOR = "app.kubernetes.io/name=ioc-chart"
+ARGOCD_TRACKING_ANNOTATION = "argocd.argoproj.io/tracking-id"
 
 # Node labels that describe hardware features or are duplicates of others:
 # hundreds of feature.node.kubernetes.io/* flags would bury the ones that
@@ -253,6 +258,110 @@ class KubernetesProvider:
                 ) from exc
             raise KubernetesUnavailableError(f"exec into '{pod_name}' failed: {text[:300]}") from exc
 
+    def _apps_v1(self) -> Any:
+        from kubernetes.client import AppsV1Api
+
+        return AppsV1Api()
+
+    async def list_ioc_workloads(self, namespace: str | None = None) -> list[IocWorkload]:
+        """Every ioc-chart StatefulSet and Deployment in the namespace (needs apps get/list)."""
+        self._require_configured()
+        ns = _check_name("namespace", self._namespace_or_default(namespace))
+        apps = self._apps_v1()
+        try:
+            sts, deps = await asyncio.gather(
+                asyncio.to_thread(apps.list_namespaced_stateful_set, ns, label_selector=IOC_CHART_SELECTOR),
+                asyncio.to_thread(apps.list_namespaced_deployment, ns, label_selector=IOC_CHART_SELECTOR),
+            )
+        except Exception as exc:  # noqa: BLE001
+            if getattr(exc, "status", None) == 403:
+                raise KubernetesUnavailableError(
+                    "Listing StatefulSets/Deployments is forbidden: ARGUS's ServiceAccount needs apps get/list "
+                    "(argus-helm-chart argusMcp.rbac.leftoverDetection)."
+                ) from exc
+            raise KubernetesUnavailableError(f"Kubernetes API unreachable: {exc}") from exc
+        out = [_to_workload("StatefulSet", w) for w in sts.items] + [_to_workload("Deployment", w) for w in deps.items]
+        out.sort(key=lambda w: (w.instance, w.kind))
+        return out
+
+    async def get_ioc_workload(self, kind: str, name: str, namespace: str) -> IocWorkload | None:
+        self._require_configured()
+        ns = _check_name("namespace", namespace)
+        _check_name("workload", name)
+        reader = {
+            "StatefulSet": self._apps_v1().read_namespaced_stateful_set,
+            "Deployment": self._apps_v1().read_namespaced_deployment,
+        }.get(kind)
+        if reader is None:
+            raise KubernetesResourceNotFoundError(f"Unsupported workload kind {kind!r}.")
+        try:
+            return _to_workload(kind, await asyncio.to_thread(reader, name, ns))
+        except Exception as exc:  # noqa: BLE001
+            if getattr(exc, "status", None) == 404:
+                return None
+            raise KubernetesUnavailableError(f"Kubernetes API unreachable: {exc}") from exc
+
+    async def list_ioc_configs(self, namespace: str | None = None) -> dict[str, str]:
+        """IOC name -> the config.yaml it was deployed with (ioc-chart ConfigMaps, label is_ioc=True)."""
+        self._require_configured()
+        ns = _check_name("namespace", self._namespace_or_default(namespace))
+        try:
+            result = await asyncio.to_thread(self._core_v1().list_namespaced_config_map, ns, label_selector="is_ioc=True")
+        except Exception as exc:  # noqa: BLE001
+            if getattr(exc, "status", None) == 403:
+                raise KubernetesUnavailableError(
+                    "Listing ConfigMaps is forbidden: ARGUS's ServiceAccount needs configmaps get/list "
+                    "(argus-helm-chart argusMcp.rbac.leftoverDetection)."
+                ) from exc
+            raise KubernetesUnavailableError(f"Kubernetes API unreachable: {exc}") from exc
+        return {cm.metadata.name: (cm.data or {}).get("config.yaml", "") for cm in result.items}
+
+    async def list_argocd_application_names(self, argocd_namespace: str) -> set[str]:
+        """Names of the ArgoCD Applications that exist (needs applications get/list in ArgoCD's namespace)."""
+        self._require_configured()
+        ns = _check_name("namespace", argocd_namespace)
+        from kubernetes.client import CustomObjectsApi
+
+        try:
+            result = await asyncio.to_thread(
+                CustomObjectsApi().list_namespaced_custom_object, "argoproj.io", "v1alpha1", ns, "applications"
+            )
+        except Exception as exc:  # noqa: BLE001
+            if getattr(exc, "status", None) == 403:
+                raise KubernetesUnavailableError(
+                    f"Reading ArgoCD Applications in '{ns}' is forbidden: ARGUS's ServiceAccount needs "
+                    "applications.argoproj.io get/list there (argus-helm-chart argusMcp.rbac.leftoverDetection)."
+                ) from exc
+            raise KubernetesUnavailableError(f"Kubernetes API unreachable: {exc}") from exc
+        return {item["metadata"]["name"] for item in result.get("items", [])}
+
+    async def scale_ioc_workload(self, kind: str, name: str, namespace: str, replicas: int) -> None:
+        self._require_configured()
+        ns = _check_name("namespace", namespace)
+        _check_name("workload", name)
+        patcher = {
+            "StatefulSet": self._apps_v1().patch_namespaced_stateful_set_scale,
+            "Deployment": self._apps_v1().patch_namespaced_deployment_scale,
+        }[kind]
+        try:
+            await asyncio.to_thread(patcher, name, ns, {"spec": {"replicas": replicas}})
+        except Exception as exc:  # noqa: BLE001
+            raise KubernetesUnavailableError(f"Could not scale {kind} '{name}': {exc}") from exc
+
+    async def delete_ioc_workload(self, kind: str, name: str, namespace: str) -> None:
+        self._require_configured()
+        ns = _check_name("namespace", namespace)
+        _check_name("workload", name)
+        deleter = {
+            "StatefulSet": self._apps_v1().delete_namespaced_stateful_set,
+            "Deployment": self._apps_v1().delete_namespaced_deployment,
+        }[kind]
+        try:
+            # Foreground: the call returns once Kubernetes has accepted it; pods go with it.
+            await asyncio.to_thread(deleter, name, ns, propagation_policy="Foreground")
+        except Exception as exc:  # noqa: BLE001
+            raise KubernetesUnavailableError(f"Could not delete {kind} '{name}': {exc}") from exc
+
     async def list_pods_on_node(self, node_name: str) -> list[NodePod]:
         """Every pod scheduled on a node, across namespaces (needs cluster-wide pod list)."""
         self._require_configured()
@@ -405,6 +514,25 @@ def _to_node_info(node: Any) -> NodeInfo:
         },
         capacity=dict(status.capacity or {}),
         allocatable=dict(status.allocatable or {}),
+    )
+
+
+def _to_workload(kind: str, obj: Any) -> IocWorkload:
+    meta, spec, status = obj.metadata, obj.spec, obj.status
+    labels = meta.labels or {}
+    tracking = (meta.annotations or {}).get(ARGOCD_TRACKING_ANNOTATION)
+    created = meta.creation_timestamp
+    if isinstance(created, datetime) and created.tzinfo is not None:
+        created = created.replace(tzinfo=None)
+    return IocWorkload(
+        kind=kind,
+        name=meta.name,
+        namespace=meta.namespace,
+        instance=labels.get("app.kubernetes.io/instance", meta.name),
+        replicas=int(spec.replicas or 0) if spec else 0,
+        ready_replicas=int(getattr(status, "ready_replicas", 0) or 0) if status else 0,
+        created=created,
+        argocd_app=tracking.split(":", 1)[0] if tracking else None,
     )
 
 
