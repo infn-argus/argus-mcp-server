@@ -107,11 +107,29 @@ class KubernetesProvider:
         return namespace or self._settings.default_namespace
 
     async def get_pod_for_ioc(self, ioc_name: str, namespace: str | None = None) -> PodStatus | None:
+        """The pod of an IOC. Also takes the pod's own name (fi1-cam-vis-01-0, as
+        list_iocs shows pods): models pass that as the IOC name all the time."""
         self._require_configured()
         ns = self._namespace_or_default(namespace)
         selector = self._settings.ioc_label_selector_template.format(ioc_name=ioc_name)
         pods = await self.list_iocs(namespace=ns, label_selector=selector)
-        return pods[0] if pods else None
+        if pods:
+            return pods[0]
+        return await self._pod_by_name(ioc_name, ns)
+
+    async def _pod_by_name(self, name: str, namespace: str) -> PodStatus | None:
+        if not _K8S_NAME_RE.match(name):
+            return None
+        try:
+            pod = await asyncio.to_thread(self._core_v1().read_namespaced_pod, name, namespace)
+        except Exception:  # noqa: BLE001 - 404 or API trouble: simply no such pod
+            return None
+        return _to_pod_status(pod, self._ioc_label_key())
+
+    def _ioc_label_key(self) -> str | None:
+        template = self._settings.ioc_label_selector_template
+        key, sep, value = template.partition("=")
+        return key.strip() if sep and "{ioc_name}" in value and "," not in template else None
 
     async def list_iocs(self, namespace: str | None = None, *, label_selector: str | None = None) -> list[PodStatus]:
         self._require_configured()
@@ -123,7 +141,8 @@ class KubernetesProvider:
         except Exception as exc:  # noqa: BLE001
             raise KubernetesUnavailableError(f"Kubernetes API unreachable: {exc}") from exc
 
-        return [_to_pod_status(item) for item in result.items]
+        label_key = self._ioc_label_key()
+        return [_to_pod_status(item, label_key) for item in result.items]
 
     async def get_pod_logs(self, pod_name: str, namespace: str, tail_lines: int = 200) -> str:
         self._require_configured()
@@ -536,8 +555,13 @@ def _to_workload(kind: str, obj: Any) -> IocWorkload:
     )
 
 
-def _to_pod_status(pod: Any) -> PodStatus:
+_K8S_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$")
+
+
+def _to_pod_status(pod: Any, ioc_label_key: str | None = None) -> PodStatus:
     status = pod.status
+    labels = (getattr(pod.metadata, "labels", None) or {}) if pod.metadata else {}
+    ioc = labels.get(ioc_label_key) if ioc_label_key else None
     conditions = {c.type: c.status for c in (status.conditions or [])}
     restart_count = sum(cs.restart_count for cs in (status.container_statuses or []))
     return PodStatus(
@@ -548,4 +572,5 @@ def _to_pod_status(pod: Any) -> PodStatus:
         restart_count=restart_count,
         node=pod.spec.node_name if pod.spec else None,
         started_at=status.start_time,
+        ioc=ioc,
     )

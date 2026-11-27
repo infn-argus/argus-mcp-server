@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from argus.core.errors import ArgusError
 from argus.providers.knowledge_hub.client import KnowledgeHubClient
 from argus.services.beamline_inventory_service import (
     BeamlineDevice,
@@ -46,8 +47,12 @@ _CONCURRENCY = 8
 
 
 class KnowledgeHubInventoryService:
-    def __init__(self, client: KnowledgeHubClient) -> None:
+    def __init__(self, client: KnowledgeHubClient, fallback: Any | None = None) -> None:
         self._client = client
+        # The YAML inventory over this beamline's own git config, when one is
+        # configured: answers device groups the hub has no records for (EUAPS's
+        # cameras were never imported), instead of an empty list.
+        self._fallback = fallback
 
     async def list_inventory(
         self,
@@ -85,6 +90,21 @@ class KnowledgeHubInventoryService:
                 seen.add(uid)
                 if matches_filters(device, devgroup, devfunc, zone):
                     devices.append(device)
+
+        if not devices and self._fallback is not None:
+            try:
+                listing = await self._fallback.list_inventory(
+                    None, devgroup=devgroup, devfunc=devfunc, zone=zone
+                )
+            except ArgusError as exc:
+                notes.append(f"No matching records in the Knowledge Hub, and the git configuration fallback failed: {exc}")
+            else:
+                if listing.devices:
+                    notes.append(
+                        "The Knowledge Hub has no matching Control Device records, so these come from the "
+                        "beamline's own configuration in git (deploy/values.yaml)."
+                    )
+                    return InventoryListing(source="yaml", devices=listing.devices, notes=notes)
 
         return InventoryListing(source="knowledge_hub", devices=devices, notes=notes)
 
