@@ -24,6 +24,7 @@ from argus.services.models import Device, DeviceStatusReport, DiagnosticReport
 
 _DEVICE_STATUS_TIMEOUT = 3.0
 _DIAGNOSE_TIMEOUT = 10.0
+_DIAGNOSE_HISTORY_POINTS = 60
 
 
 class DiagnosticsService:
@@ -88,7 +89,10 @@ class DiagnosticsService:
         pre_skipped: dict[str, ProviderResult] = {}
 
         if device.primary_pv:
-            tasks["history"] = self._archiver.get_data(device.primary_pv, now - history_window, now, timeout=timeout)
+            # A trend for context, not every sample: a busy PV logs thousands an hour.
+            tasks["history"] = self._archiver.get_data(
+                device.primary_pv, now - history_window, now, max_points=_DIAGNOSE_HISTORY_POINTS, timeout=timeout
+            )
         else:
             pre_skipped["history"] = skipped("archiver", "device has no primary PV")
 

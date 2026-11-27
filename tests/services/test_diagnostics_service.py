@@ -40,7 +40,7 @@ class _StubEpics:
 
 
 class _StubArchiver:
-    async def get_data(self, pv_name, start, end, timeout=5.0):
+    async def get_data(self, pv_name, start, end, timeout=5.0, **kwargs):
         return ArchiverSeries(pv_name=pv_name, samples=[])
 
 
@@ -154,7 +154,7 @@ async def test_diagnose_device_pod_logs_falls_back_to_kubectl_without_loki():
 
 async def test_diagnose_device_respects_per_provider_timeout():
     class _SlowArchiver:
-        async def get_data(self, pv_name, start, end, timeout=5.0):
+        async def get_data(self, pv_name, start, end, timeout=5.0, **kwargs):
             await asyncio.sleep(10)
             return ArchiverSeries(pv_name=pv_name, samples=[])
 

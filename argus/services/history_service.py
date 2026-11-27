@@ -32,8 +32,10 @@ class HistoryService:
         self._elastic = elastic
         self._loki = loki
 
-    async def get_history(self, pv_name: str, start: datetime, end: datetime) -> ArchiverSeries:
-        return await self._archiver.get_data(pv_name, start, end)
+    async def get_history(
+        self, pv_name: str, start: datetime, end: datetime, *, max_points: int | None = None
+    ) -> ArchiverSeries:
+        return await self._archiver.get_data(pv_name, start, end, max_points=max_points)
 
     async def get_alarm_history(self, device_name: str, since: datetime | None = None) -> list[LogbookEntry]:
         since = since or datetime.now(timezone.utc) - timedelta(days=7)
