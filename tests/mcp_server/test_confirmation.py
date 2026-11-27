@@ -33,8 +33,9 @@ def test_digest_ignores_key_order_and_the_confirmation_itself():
     assert arguments_digest("t", {"a": 1, "b": [1, 2]}) == arguments_digest("t", {"b": [1, 2], "a": 1, "confirmation_id": "c"})
 
 
-def test_caller_key_prefers_the_token_and_never_contains_it():
-    key = caller_key("eyJsecret", {"user_id": "u1"})
+def test_caller_key_is_the_user_not_the_token_and_never_contains_it():
+    # LibreChat's user id first: it stays the same when the AAI token is renewed or expires mid-answer.
+    assert caller_key("eyJsecret", {"user_id": "u1"}) == "user:u1" == caller_key(None, {"user_id": "u1"})
+    key = caller_key("eyJsecret", None)
     assert key.startswith("token:") and "eyJsecret" not in key
-    assert caller_key(None, {"user_id": "u1"}) == "user:u1"
     assert caller_key(None, None) == "anonymous"

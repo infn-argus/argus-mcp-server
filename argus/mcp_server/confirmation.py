@@ -30,6 +30,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from argus.core.jwt_claims import subject as jwt_subject
+
 CONFIRMATION_TTL_SECONDS = 600
 CONFIRMATION_ARG = "confirmation_id"
 
@@ -46,11 +48,18 @@ def arguments_digest(tool: str, arguments: dict[str, Any]) -> str:
 
 
 def caller_key(caller_token: str | None, correlation: dict[str, str] | None) -> str:
-    """Who is confirming: a hash of their forwarded token, else LibreChat's user id, else nobody in particular."""
+    """Who is confirming: LibreChat's user id, else the person their forwarded token is for, else a hash
+    of the token, else nobody in particular. Never the token itself: it is refreshed every few minutes,
+    and a preview made with one token must be confirmable with the next."""
+    user_id = (correlation or {}).get("user_id")
+    if user_id:
+        return f"user:{user_id}"
+    person = jwt_subject(caller_token)
+    if person:
+        return "sub:" + hashlib.sha256(person.encode()).hexdigest()[:32]
     if caller_token:
         return "token:" + hashlib.sha256(caller_token.encode()).hexdigest()[:32]
-    user_id = (correlation or {}).get("user_id")
-    return f"user:{user_id}" if user_id else "anonymous"
+    return "anonymous"
 
 
 @dataclass
@@ -84,6 +93,14 @@ class ConfirmationStore:
         if pending is None:
             return "unknown or expired confirmation_id - call the tool again without it to get a new one"
         if pending.caller != caller:
+            if caller == "anonymous":
+                # LibreChat stops sending the user's AAI token once it expires, which can happen in the
+                # middle of one answer: the same person, not someone else.
+                return (
+                    "no sign-in came with this call (the user's sign-in token has probably expired during this "
+                    "answer), so nothing was done. Do not retry now: tell the user, and ask them to send the "
+                    "request again in a new message (that renews the sign-in)"
+                )
             return "this confirmation_id was issued to another user"
         if pending.digest != arguments_digest(tool, arguments):
             return (

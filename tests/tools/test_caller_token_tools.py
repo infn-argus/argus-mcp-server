@@ -52,10 +52,11 @@ async def test_a_refused_entry_reaches_the_model_as_a_clear_logbook_refused_erro
     )
     respx.get("http://olog.test/Olog/logbooks").mock(return_value=httpx.Response(200, json=[{"name": "SPARC-Shift"}]))
 
-    payload = json.loads(
-        (await build_registry().dispatch(
-            "create_logbook_entry", {"title": "t", "text": "x", "logbooks": ["Operations"]}, ctx
-        ))[0].text
-    )
+    with caller_token_scope("eyJuser"):
+        payload = json.loads(
+            (await build_registry().dispatch(
+                "create_logbook_entry", {"title": "t", "text": "x", "logbooks": ["Operations"]}, ctx
+            ))[0].text
+        )
     assert payload["status"] == "error" and payload["code"] == "logbook_refused"
-    assert "Valid logbooks here: SPARC-Shift." in payload["message"]
+    assert "The logbooks are: SPARC-Shift." in payload["message"]

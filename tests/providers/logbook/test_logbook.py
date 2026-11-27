@@ -133,9 +133,11 @@ async def test_create_entry_sends_expected_body_and_parses_response():
             },
         )
     )
-    entry = await provider.create_entry(
-        "Shift handover", "All nominal.", ["operations"], tags=["maintenance"]
-    )
+    respx.get("http://olog.test/Olog/logbooks").mock(return_value=httpx.Response(200, json=[{"name": "operations"}, {"name": "Linac"}]))
+    with caller_token_scope("eyJuser"):
+        entry = await provider.create_entry(
+            "Shift handover", "All nominal.", ["operations"], tags=["maintenance"]
+        )
     assert entry.id == "42"
     assert entry.title == "Shift handover"
     assert entry.logbooks == ["operations"]
@@ -155,7 +157,8 @@ async def test_create_entry_sends_expected_body_and_parses_response():
 async def test_create_entry_unreachable_raises_unavailable():
     provider = _configured()
     respx.put("http://olog.test/Olog/logs").mock(side_effect=httpx.ConnectError("refused"))
-    with pytest.raises(LogbookUnavailableError):
+    respx.get("http://olog.test/Olog/logbooks").mock(return_value=httpx.Response(200, json=[{"name": "operations"}, {"name": "Linac"}]))
+    with caller_token_scope("eyJuser"), pytest.raises(LogbookUnavailableError):
         await provider.create_entry("title", "text", ["operations"])
 
 
@@ -186,9 +189,11 @@ async def test_an_entry_created_with_a_caller_token_is_created_as_that_person():
     route = respx.put("http://olog.test/Olog/logs").mock(
         return_value=httpx.Response(200, json={"id": 7, "title": "t", "description": "x", "owner": "jdoe"})
     )
+    respx.get("http://olog.test/Olog/logbooks").mock(return_value=httpx.Response(200, json=[{"name": "operations"}, {"name": "Linac"}]))
     with caller_token_scope("eyJuser"):
         entry = await _configured().create_entry("t", "x", ["Operations"])
     assert route.calls.last.request.headers["authorization"] == "Bearer eyJuser"
+    assert json.loads(route.calls.last.request.content)["logbooks"] == [{"name": "operations"}]
     assert entry.author == "jdoe"
 
 
@@ -249,8 +254,9 @@ async def test_an_invalid_logbook_name_comes_back_as_ologs_reason_with_the_valid
         with pytest.raises(LogbookRefusedError) as raised:
             await _configured().create_entry("t", "x", ["Operations"])
     message = str(raised.value)
-    assert "Olog refused to create the entry (HTTP 400): One or more invalid logbook name(s)" in message
-    assert "Valid logbooks here: Linac, SPARC-Shift." in message
+    # Now caught before posting, against Olog's own list.
+    assert "No logbook named 'Operations' here. The logbooks are: Linac, SPARC-Shift." in message
+    assert not respx.routes[0].called
     assert "unreachable" not in message
     # The names are read as the same user.
     assert names.calls.last.request.headers["authorization"] == "Bearer eyJuser"
@@ -260,8 +266,10 @@ async def test_an_invalid_logbook_name_comes_back_as_ologs_reason_with_the_valid
 async def test_a_forbidden_write_says_so_and_a_server_error_is_still_unavailable():
     route = respx.put("http://olog.test/Olog/logs")
     route.mock(return_value=httpx.Response(403, json={"message": "Forbidden"}))
-    with pytest.raises(LogbookRefusedError, match="HTTP 403.*may not do this in Olog"):
-        await _configured().create_entry("t", "x", ["Linac"])
-    route.mock(return_value=httpx.Response(503, text="down"))
-    with pytest.raises(LogbookUnavailableError):
-        await _configured().create_entry("t", "x", ["Linac"])
+    respx.get("http://olog.test/Olog/logbooks").mock(return_value=httpx.Response(200, json=[{"name": "operations"}, {"name": "Linac"}]))
+    with caller_token_scope("eyJuser"):
+        with pytest.raises(LogbookRefusedError, match="HTTP 403.*may not do this in Olog"):
+            await _configured().create_entry("t", "x", ["Linac"])
+        route.mock(return_value=httpx.Response(503, text="down"))
+        with pytest.raises(LogbookUnavailableError):
+            await _configured().create_entry("t", "x", ["Linac"])
