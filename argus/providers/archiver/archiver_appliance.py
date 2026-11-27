@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import ClassVar
+from urllib.parse import urlencode
 
 import httpx
 
@@ -105,6 +106,19 @@ class ArchiverApplianceProvider:
 
         binned = any(s.count is not None for s in samples)
         return ArchiverSeries(pv_name=pv_name, samples=samples, units=units, binned=binned)
+
+    def viewer_url(self, pv_name: str, start: datetime, end: datetime) -> str | None:
+        """Link to the appliance's own web viewer (archViewer) for this PV and range:
+        interactive, full resolution, opens instantly in the user's browser."""
+        if not self.is_configured():
+            return None
+
+        def iso(ts: datetime) -> str:
+            ts = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+            return ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        query = urlencode({"pv": pv_name, "from": iso(start), "to": iso(end)}, safe=":")
+        return f"{self._settings.base_url.rstrip('/')}/retrieval/ui/viewer/archViewer.html?{query}"
 
     async def get_latest(self, pv_name: str, *, timeout: float = 5.0) -> ArchiverSample | None:
         now = datetime.utcnow()
