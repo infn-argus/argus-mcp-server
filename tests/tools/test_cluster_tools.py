@@ -59,3 +59,30 @@ async def test_cluster_tools_are_read_only(app_context):
     tools = {t.name: t for t in build_registry().list_tools(confirm_writes=True)}
     for name in ("inspect_pod", "inspect_node"):
         assert "confirmation_id" not in tools[name].inputSchema["properties"]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [{}, {"ioc": "a", "hosts": "192.168.0.5"}, {"ioc": "a", "port": 70000}, {"ioc": "a", "count": "3"}, {"hosts": ["192.168.0.5"], "vantage": "ioc"}],
+)
+async def test_check_connectivity_argument_validation(app_context, args):
+    payload = await _call(app_context, "check_connectivity", args)
+    assert payload["status"] == "error" and payload["code"] == "validation_error"
+
+
+async def test_check_connectivity_refuses_public_hosts(app_context):
+    payload = await _call(app_context, "check_connectivity", {"hosts": ["8.8.8.8"]})
+    assert payload["status"] == "error" and "private" in payload["message"]
+
+
+@pytest.mark.parametrize("args", [{}, {"name": "x", "action": "nuke"}, {"name": "x", "kind": "Pod"}])
+async def test_remove_leftover_ioc_argument_validation(app_context, args):
+    payload = await _call(app_context, "remove_leftover_ioc", {**args, "confirm": True})
+    assert payload["status"] in ("error", "confirmation_required")
+    if payload["status"] == "error":
+        assert payload["code"] == "validation_error"
+
+
+def test_remove_leftover_ioc_always_confirms():
+    tool = build_registry()._tools["remove_leftover_ioc"]
+    assert tool.writes and tool.always_confirm

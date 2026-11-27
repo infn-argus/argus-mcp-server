@@ -38,6 +38,8 @@ from argus.providers.loki.loki import LokiProvider
 from argus.providers.prometheus.prometheus import PrometheusProvider
 from argus.providers.saverestore.saverestore import SaveRestoreProvider
 from argus.services.cluster_service import ClusterService
+from argus.services.connectivity_service import ConnectivityService
+from argus.services.leftover_service import LeftoverService
 from argus.services.device_service import DeviceService
 from argus.services.diagnostics_service import DiagnosticsService
 from argus.services.documentation_service import DocumentationService
@@ -174,4 +176,10 @@ def app_context(fake_epics: FakeEpicsProvider, unconfigured_epics_pva: FakeEpics
         saverestore_service=saverestore_service,
         prometheus=prometheus,
         cluster_service=ClusterService(kubernetes=kubernetes, prometheus=prometheus),
+        connectivity_service=ConnectivityService(
+            kubernetes=kubernetes, knowledge=knowledge_service, default_namespace="default"
+        ),
+        leftover_service=LeftoverService(
+            kubernetes=kubernetes, knowledge=knowledge_service, default_namespace="default"
+        ),
     )

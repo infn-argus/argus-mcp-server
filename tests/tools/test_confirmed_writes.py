@@ -15,10 +15,11 @@ from argus.services.history_service import HistoryService
 WRITE_TOOLS = {
     "set_pv", "set_pv_value", "restart_ioc", "execute_procedure", "create_logbook_entry", "update_logbook_entry",
     "create_saverestore_configuration", "take_saverestore_snapshot", "restore_saverestore_snapshot",
-    "create_magnet_set", "apply_magnet_set", "archive_magnet_pvs",
+    "create_magnet_set", "apply_magnet_set", "archive_magnet_pvs", "remove_leftover_ioc",
 }
-# Confirmed for every client, header or not: these write a whole set of the machine at once.
-ALWAYS_CONFIRMED = {"restore_saverestore_snapshot", "apply_magnet_set"}
+# Confirmed for every client, header or not: these write a whole set of the machine at once,
+# or stop/delete an IOC deployment.
+ALWAYS_CONFIRMED = {"restore_saverestore_snapshot", "apply_magnet_set", "remove_leftover_ioc"}
 
 
 def _with_olog(app_context: AppContext) -> AppContext:

@@ -39,6 +39,9 @@ class KubernetesSettings(_ProviderSettings):
     ioc_label_selector_template: str = Field(
         default="app=ioc,device={ioc_name}", alias="K8S_IOC_LABEL_SELECTOR_TEMPLATE"
     )
+    # Where ArgoCD's Application objects live: find_leftover_iocs checks that
+    # the app an IOC workload's tracking annotation names still exists.
+    argocd_namespace: str = Field(default="argocd", alias="K8S_ARGOCD_NAMESPACE")
 
 
 class ArgoCDSettings(_ProviderSettings):
