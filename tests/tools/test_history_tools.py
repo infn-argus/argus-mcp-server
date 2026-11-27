@@ -93,7 +93,7 @@ async def test_get_history_asks_the_archiver_to_downsample_and_returns_bins(app_
     payload = await _history(app_context, {
         "pv_name": "GUNQUA01:CURRENT_RB", "start": "2026-11-26T12:00:00+00:00", "end": "2026-11-27T12:00:00+00:00",
     })
-    assert route.calls.last.request.url.params["pv"] == "optimized_300(GUNQUA01:CURRENT_RB)"
+    assert route.calls.last.request.url.params["pv"] == "optimized_120(GUNQUA01:CURRENT_RB)"
     assert payload["status"] == "success"
     assert (payload["mode"], payload["units"], payload["point_count"], payload["samples_in_range"]) == (
         "binned", "A", 2, 462)
@@ -101,6 +101,10 @@ async def test_get_history_asks_the_archiver_to_downsample_and_returns_bins(app_
     # 6 significant digits, UTC ISO times
     assert payload["points"][0] == ["2026-11-26T12:40:48Z", -0.00207418, -0.00256, -0.00162, 232]
     assert payload["summary"] == {"min": -0.00256, "max": -0.00162, "first": -0.00207418, "last": -0.00201}
+    assert payload["viewer_url"] == (
+        "http://archiver.test/retrieval/ui/viewer/archViewer.html?pv=GUNQUA01:CURRENT_RB"
+        "&from=2026-11-26T12:00:00.000Z&to=2026-11-27T12:00:00.000Z"
+    )
 
 
 @respx.mock

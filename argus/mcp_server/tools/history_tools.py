@@ -8,7 +8,10 @@ from argus.core.context import AppContext
 from argus.core.errors import ValidationError
 from argus.mcp_server.tools.registry import ToolDefinition
 
-_DEFAULT_POINTS = 300
+# 120 points draw a clear chart; a model that writes the chart re-types every
+# point (~2.5k tokens here), and 300 took long enough to hit LibreChat's
+# upstream stream cutoff (~5 min) on qwen38-27b-fp8.
+_DEFAULT_POINTS = 120
 _MIN_POINTS = 10
 _MAX_POINTS = 2000
 
@@ -89,7 +92,11 @@ async def _get_history(arguments: dict[str, Any], ctx: AppContext) -> dict[str, 
         raise ValidationError("start must be before end.")
 
     series = await ctx.history_service.get_history(pv_name, start, end, max_points=max_points)
-    return _history_payload(series, start, end)
+    payload = _history_payload(series, start, end)
+    viewer = ctx.history_service.archiver_viewer_url(pv_name, start, end)
+    if viewer:
+        payload["viewer_url"] = viewer
+    return payload
 
 
 def _num(value: Any) -> Any:
@@ -264,8 +271,10 @@ TOOLS = [
             "Historical trend of a PV over a time range, from the Archiver Appliance - for questions like 'what "
             "did X do last night' and for charts. Returns compact rows (time, value) with a min/max/first/last "
             "summary; a long range is down-sampled by the archiver into at most max_points time bins "
-            "(mean, min, max, count), so a month costs the same as an hour. To chart it, build the chart from "
-            "these points as they are - don't thin them further by hand."
+            "(mean, min, max, count), so a month costs the same as an hour. viewer_url opens the same PV and "
+            "range in the archiver's own interactive viewer (full resolution, zoom, instant): give it to the "
+            "user whenever they want to see or plot a trend. Build a chart in the chat only if they ask for "
+            "one there, from these points as they are - don't thin them further by hand."
         ),
         input_schema=_GET_HISTORY_SCHEMA,
         handler=_get_history,
