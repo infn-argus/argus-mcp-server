@@ -10,7 +10,11 @@ Read-only by construction:
 - ICMP echo through an unprivileged "ping socket" (no raw sockets, no
   capabilities; needs net.ipv4.ping_group_range to include the uid, which is
   the Linux default on current kernels), falling back to the ``ping`` binary.
-- TCP: connect, then close. Nothing is sent.
+- TCP: connect, then close. Nothing is sent. Before connecting, the probe
+  looks in /proc/net/tcp{,6} for an ESTABLISHED connection from this pod to
+  the same address and port: serial-to-Ethernet servers (Moxa and the like)
+  accept one client per port, so while the IOC holds it a second connect is
+  refused - which then means "in use by the IOC", not "service down".
 - GigE Vision: one GVCP READREG of the Control Channel Privilege register
   (0x0A00) - the register every GigE camera answers, and the same read the
   camera's own controller makes each second. Says whether the camera answers
@@ -32,7 +36,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-PROBE_VERSION = 1
+PROBE_VERSION = 2
 MAX_TARGETS = 32
 MAX_COUNT = 5
 
@@ -130,7 +134,42 @@ def _ping(ip: str, count: int, timeout: float) -> dict:
         return {"method": "ping-socket", "error": str(exc)}
 
 
+def _hex_endpoint(ip: str, port: int) -> set[str]:
+    """/proc/net/tcp{,6} spellings of ip:port (little-endian words, as the kernel prints them)."""
+    packed = socket.inet_aton(ip)
+    v4 = "%08X" % struct.unpack("<I", packed)[0]
+    mapped = "0000000000000000FFFF0000" + v4
+    return {f"{v4}:{port:04X}", f"{mapped}:{port:04X}"}
+
+
+def _held_connection(ip: str, port: int) -> bool:
+    """True if this network namespace has an ESTABLISHED TCP connection to ip:port."""
+    try:
+        wanted = _hex_endpoint(ip, port)
+    except OSError:
+        return False
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path) as handle:
+                next(handle, None)
+                for line in handle:
+                    fields = line.split()
+                    if len(fields) > 3 and fields[3] == "01" and fields[2].upper() in wanted:
+                        return True
+        except OSError:
+            continue
+    return False
+
+
 def _tcp(ip: str, port: int, timeout: float) -> dict:
+    held = _held_connection(ip, port)
+    result = _tcp_connect(ip, port, timeout)
+    if held:
+        result["held_by_this_pod"] = True
+    return result
+
+
+def _tcp_connect(ip: str, port: int, timeout: float) -> dict:
     start = time.monotonic()
     try:
         with socket.create_connection((ip, port), timeout=timeout):

@@ -175,7 +175,12 @@ def _reachable(result: dict[str, Any] | None) -> bool | None:
     ping = result.get("ping") or {}
     tcp = result.get("tcp") or {}
     gvcp = result.get("gvcp") or {}
-    return bool(ping.get("received")) or tcp.get("state") in ("open", "refused") or bool(gvcp.get("answered"))
+    return (
+        bool(ping.get("received"))
+        or tcp.get("state") in ("open", "refused")
+        or bool(tcp.get("held_by_this_pod"))
+        or bool(gvcp.get("answered"))
+    )
 
 
 def _describe(target: Target) -> str:
@@ -394,6 +399,9 @@ class ConnectivityService:
             entry["verdict"] = self._verdict(report, target, from_argus, from_ioc, ioc_ran="ioc" in results)
             report.targets.append(entry)
 
+        if report.targets:
+            report.finding("info", _summary(report.targets))
+
         if high_restarts:
             name, restarts, last_end = high_restarts
             last = f" The last restart: {last_end}." if last_end else ""
@@ -444,6 +452,9 @@ class ConnectivityService:
             assert result is not None
             tcp = result.get("tcp") or {}
             gvcp = result.get("gvcp") or {}
+            if target.port and tcp.get("state") != "open" and tcp.get("held_by_this_pod") and result is from_ioc:
+                # One-client servers (Moxa & co.) refuse a second connection while the IOC holds the port.
+                return "in_use_by_ioc"
             if target.port and tcp.get("state") != "open":
                 report.finding(
                     "warning",
@@ -486,6 +497,33 @@ class ConnectivityService:
             )
             return "unreachable_from_argus"
         return "not_tested"
+
+
+_VERDICT_WORDS = {
+    "reachable": "reachable",
+    "reachable_from_ioc_only": "reachable from the IOC only (normal on a private device network)",
+    "in_use_by_ioc": "connected to the IOC right now (port held by the IOC: healthy)",
+    "host_up_port_closed": "host up but port closed",
+    "camera_not_controlled": "camera not controlled by the IOC",
+    "unreachable": "unreachable",
+    "unreachable_from_ioc": "unreachable from the IOC",
+    "unreachable_from_argus": "unreachable from ARGUS",
+    "dns_failure": "DNS failure",
+    "not_tested": "not tested",
+}
+_HEALTHY = {"reachable", "reachable_from_ioc_only", "in_use_by_ioc"}
+
+
+def _summary(targets: list[dict[str, Any]]) -> str:
+    counts: dict[str, int] = {}
+    for t in targets:
+        counts[t["verdict"]] = counts.get(t["verdict"], 0) + 1
+    total = len(targets)
+    healthy = sum(n for v, n in counts.items() if v in _HEALTHY)
+    parts = ", ".join(f"{n} {_VERDICT_WORDS.get(v, v)}" for v, n in sorted(counts.items(), key=lambda kv: -kv[1]))
+    if healthy == total:
+        return f"All {total} devices checked are OK: {parts}."
+    return f"{total} devices checked, {healthy} OK and {total - healthy} with problems: {parts}."
 
 
 def _is_private_name(result: dict[str, Any] | None) -> bool:
