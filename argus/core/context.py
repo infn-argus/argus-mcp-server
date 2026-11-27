@@ -34,6 +34,7 @@ from argus.providers.prometheus.prometheus import PrometheusProvider
 from argus.providers.saverestore.saverestore import SaveRestoreProvider
 from argus.services.beamline_inventory_service import BeamlineInventoryService
 from argus.services.cluster_service import ClusterService
+from argus.services.connectivity_service import ConnectivityService
 from argus.services.device_service import DeviceService
 from argus.services.diagnostics_service import DiagnosticsService
 from argus.services.documentation_service import DocumentationService
@@ -88,6 +89,8 @@ class AppContext:
     # inspect_pod/inspect_node diagnostics built on it and the Kubernetes API.
     prometheus: PrometheusProvider | None = None
     cluster_service: ClusterService | None = None
+    # check_connectivity: ping/TCP/GigE probes from ARGUS and from inside an IOC's pod.
+    connectivity_service: ConnectivityService | None = None
 
     @classmethod
     def build(cls, settings: Settings | None = None) -> AppContext:
@@ -176,6 +179,11 @@ class AppContext:
             prometheus=prometheus,
             default_namespace=settings.kubernetes.default_namespace,
         )
+        connectivity_service = ConnectivityService(
+            kubernetes=kubernetes,
+            knowledge=knowledge_service,
+            default_namespace=settings.kubernetes.default_namespace,
+        )
 
         return cls(
             settings=settings,
@@ -208,4 +216,5 @@ class AppContext:
             magnet_service=magnet_service,
             prometheus=prometheus,
             cluster_service=cluster_service,
+            connectivity_service=connectivity_service,
         )

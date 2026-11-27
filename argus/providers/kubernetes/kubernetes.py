@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from datetime import datetime
 from typing import Any, ClassVar
 
@@ -175,6 +176,82 @@ class KubernetesProvider:
                 raise KubernetesResourceNotFoundError(f"Node '{node_name}' not found.") from exc
             raise KubernetesUnavailableError(f"Kubernetes API unreachable: {exc}") from exc
         return _to_node_info(node)
+
+    async def exec_in_pod(
+        self,
+        pod_name: str,
+        namespace: str,
+        command: list[str],
+        *,
+        container: str | None = None,
+        timeout: float = 30.0,
+    ) -> tuple[int | None, str, str]:
+        """Run ``command`` (an argv list, never a shell string) in a pod; return (exit code, stdout, stderr).
+
+        Needs ``pods/exec`` create on the namespace. Callers pass fixed
+        commands only (e.g. the connectivity probe): nothing here builds a
+        command from free text.
+        """
+        self._require_configured()
+        ns = _check_name("namespace", namespace)
+        _check_name("pod", pod_name)
+        if container is not None:
+            _check_name("container", container)
+        if not command or not all(isinstance(part, str) for part in command):
+            raise KubernetesResourceNotFoundError("exec command must be a non-empty list of strings.")
+
+        def _run() -> tuple[int | None, str, str]:
+            from kubernetes.client import ApiClient, CoreV1Api
+            from kubernetes.stream import stream
+
+            # stream() swaps the API client's request method for a websocket
+            # one; a client of its own keeps the shared one usable for REST.
+            api = CoreV1Api(api_client=ApiClient())
+            kwargs: dict[str, Any] = dict(
+                command=command, stderr=True, stdin=False, stdout=True, tty=False, _preload_content=False
+            )
+            if container:
+                kwargs["container"] = container
+            resp = stream(api.connect_get_namespaced_pod_exec, pod_name, ns, **kwargs)
+            out: list[str] = []
+            err: list[str] = []
+            end = time.monotonic() + timeout
+            try:
+                while resp.is_open() and time.monotonic() < end:
+                    resp.update(timeout=1)
+                    if resp.peek_stdout():
+                        out.append(resp.read_stdout())
+                    if resp.peek_stderr():
+                        err.append(resp.read_stderr())
+                if resp.is_open():
+                    raise TimeoutError(f"exec in '{pod_name}' did not finish within {timeout:.0f}s")
+                code = resp.returncode
+            finally:
+                resp.close()
+            return code, "".join(out), "".join(err)
+
+        try:
+            return await asyncio.to_thread(_run)
+        except TimeoutError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            status = getattr(exc, "status", None)
+            text = str(exc)
+            if status == 403 or "Forbidden" in text:
+                raise KubernetesUnavailableError(
+                    f"exec into '{pod_name}' is forbidden: ARGUS's ServiceAccount needs 'pods/exec' create "
+                    "in this namespace (argus-helm-chart argusMcp.rbac.iocExec)."
+                ) from exc
+            if status == 404:
+                raise KubernetesResourceNotFoundError(f"Pod '{pod_name}' not found in '{ns}'.") from exc
+            kubelet = re.search(r"dialing ([\d.]+):10250, code (\d+)", text)
+            if kubelet or ":10250/" in text:
+                where = f" ({kubelet.group(1)}, HTTP {kubelet.group(2)})" if kubelet else ""
+                raise KubernetesUnavailableError(
+                    f"exec into '{pod_name}' failed: the API server cannot reach the kubelet on the pod's node{where}. "
+                    "That is a node problem, not the IOC's; the pod itself may be fine."
+                ) from exc
+            raise KubernetesUnavailableError(f"exec into '{pod_name}' failed: {text[:300]}") from exc
 
     async def list_pods_on_node(self, node_name: str) -> list[NodePod]:
         """Every pod scheduled on a node, across namespaces (needs cluster-wide pod list)."""

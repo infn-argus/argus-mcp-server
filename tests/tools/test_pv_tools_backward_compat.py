@@ -133,5 +133,9 @@ async def test_tool_count_is_within_high_level_target_band():
     # (Multus networks, events, node conditions, Prometheus per-interface
     # rates/drops, UDP buffer overflows, softirq CPU). A device-less question
     # ("is dom003 dropping packets?") has no device for diagnose_device to
-    # resolve, and the node is a different subject from the pod on it.
-    assert 15 <= len(registry.list_tools()) <= 36
+    # resolve, and the node is a different subject from the pod on it. +1 more
+    # (37): check_connectivity - ping/TCP/GigE reachability of an IOC's
+    # devices, run inside the IOC's own pod (private device networks are only
+    # reachable from there) and from ARGUS, compared. A network question about
+    # the device, not about the pod (inspect_pod) or the node (inspect_node).
+    assert 15 <= len(registry.list_tools()) <= 37

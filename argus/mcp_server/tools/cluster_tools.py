@@ -37,6 +37,38 @@ _INSPECT_NODE_SCHEMA = {
 }
 
 
+_CHECK_CONNECTIVITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ioc": {
+            "type": "string",
+            "description": (
+                "IOC name, e.g. ac2bpm01 or sbncamera-04: its device addresses (host/server/ip, device ip/id, ports) "
+                "are read from the beamline config, and the probe also runs inside this IOC's pod."
+            ),
+        },
+        "hosts": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Explicit host names or IPv4 addresses (private networks only). With ioc, they are probed from that IOC's pod instead of its configured devices.",
+        },
+        "port": {"type": "integer", "description": "TCP port to test on every target (overrides configured ports)."},
+        "namespace": {"type": "string", "description": "Namespace (the beamline, e.g. sparc). Defaults to the configured one."},
+        "vantage": {
+            "type": "string",
+            "enum": ["auto", "argus", "ioc", "both"],
+            "description": (
+                "Where to probe from. 'ioc': inside the IOC's pod (its VLANs, routes, firewall position) - the only "
+                "conclusive test for devices on private networks such as power-supply LANs. 'argus': from ARGUS's "
+                "pod. 'both'/'auto' (default): both when an ioc is given, and compare."
+            ),
+        },
+        "count": {"type": "integer", "description": "Pings per target, 1-5 (default 3)."},
+    },
+    "required": [],
+}
+
+
 def _window(arguments: dict[str, Any]) -> int:
     value = arguments.get("window_minutes", 5)
     if not isinstance(value, int) or isinstance(value, bool):
@@ -68,6 +100,33 @@ async def _inspect_node(arguments: dict[str, Any], ctx: AppContext) -> dict[str,
     return report.to_dict()
 
 
+async def _check_connectivity(arguments: dict[str, Any], ctx: AppContext) -> dict[str, Any]:
+    service = ctx.connectivity_service
+    if service is None:
+        raise ValidationError("Connectivity checks are not available in this deployment.")
+    hosts = arguments.get("hosts")
+    if hosts is not None and (not isinstance(hosts, list) or not all(isinstance(h, str) for h in hosts)):
+        raise ValidationError("hosts must be a list of strings.")
+    port = arguments.get("port")
+    if port is not None and (not isinstance(port, int) or isinstance(port, bool) or not 0 < port < 65536):
+        raise ValidationError("port must be an integer 1-65535.")
+    count = arguments.get("count", 3)
+    if not isinstance(count, int) or isinstance(count, bool):
+        raise ValidationError("count must be an integer.")
+    ioc = arguments.get("ioc")
+    if ioc is not None and not isinstance(ioc, str):
+        raise ValidationError("ioc must be a string.")
+    report = await service.check(
+        ioc=ioc or None,
+        hosts=hosts or None,
+        port=port,
+        namespace=arguments.get("namespace"),
+        vantage=arguments.get("vantage", "auto"),
+        count=count,
+    )
+    return report.to_dict()
+
+
 TOOLS = [
     ToolDefinition(
         name="inspect_pod",
@@ -93,5 +152,18 @@ TOOLS = [
         ),
         input_schema=_INSPECT_NODE_SCHEMA,
         handler=_inspect_node,
+    ),
+    ToolDefinition(
+        name="check_connectivity",
+        description=(
+            "Are an IOC's devices reachable on the network? Pings each device address the IOC's config declares "
+            "(host/server/ip, devices' ip, camera ids), tests its TCP port, and for GigE cameras reads the control "
+            "register (does the camera answer, does anything control it). Runs inside the IOC's own pod - the same "
+            "network position as the IOC, required for devices on private networks only the IOC can reach - and "
+            "from ARGUS, then compares: device off, IOC network path broken, host up but service port closed. "
+            "Use it when an IOC restarts repeatedly, is disconnected, or its PVs are invalid. Read-only."
+        ),
+        input_schema=_CHECK_CONNECTIVITY_SCHEMA,
+        handler=_check_connectivity,
     ),
 ]
