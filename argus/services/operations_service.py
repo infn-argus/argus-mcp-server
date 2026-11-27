@@ -7,6 +7,8 @@ EPICS transport to use) and combines results into what a tool needs.
 
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass
 from typing import Any
 
@@ -57,6 +59,25 @@ class MachineSummary:
     recent_alarm_count: int
 
 
+def _level_pattern(pattern: str) -> re.Pattern[str]:
+    out = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^:]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^:]")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(out))
+
+
 class OperationsService:
     def __init__(
         self,
@@ -77,6 +98,24 @@ class OperationsService:
 
     async def get_pv(self, pv_name: str) -> PVValue:
         return await self._epics.get(pv_name)
+
+    async def get_pvs(self, pv_names: list[str], timeout: float = 5.0) -> list[PVValue]:
+        """Many PVs in one batch; one that doesn't answer comes back disconnected, never fails the rest."""
+        return await self._epics.get_many(pv_names, timeout=timeout)
+
+    async def pv_names_matching(self, pattern: str, limit: int) -> tuple[list[str], bool]:
+        """PV names ChannelFinder lists for a name pattern, sorted; and whether there were
+        more than `limit`. `*` matches within one ':'-separated level (EUAPS:CAM:*:ArrayRate_RBV
+        is each camera's rate, not every plugin's), `**` across levels, `?` one character.
+        ChannelFinder's own `*` crosses levels, so it is asked broadly and filtered here."""
+        if self._channelfinder is None or not self._channelfinder.is_configured():
+            raise ChannelFinderError(
+                "A PV pattern needs ChannelFinder (set CHANNELFINDER_BASE_URL): pass pv_names instead."
+            )
+        channels = await self._channelfinder.find_channels(pattern.replace("**", "*"))
+        matcher = _level_pattern(pattern)
+        names = sorted({c.name for c in channels if matcher.fullmatch(c.name)})
+        return names[:limit], len(names) > limit
 
     async def set_pv(self, pv_name: str, value: Any) -> PVWriteResult:
         return await self._epics.put(pv_name, value)
