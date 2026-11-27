@@ -40,9 +40,10 @@ _GET_PV_SCHEMA = {
         "pattern": {
             "type": "string",
             "description": "Read every PV whose name matches this pattern (looked up in ChannelFinder): * "
-            "matches within one ':' level, ** across levels, ? one character. E.g. "
+            "matches within one ':' level, ** across levels, ? one character, {a,b} either. E.g. "
             "'EUAPS:CAM:*:ArrayRate_RBV' (each camera's frame rate) or "
-            f"'EUAPS:CAM:*:Overlay1:*:SizeX_RBV' (every overlay's width). Up to {_MAX_MANY} matches.",
+            "'EUAPS:CAM:*:Overlay1:*:{SizeX,SizeY}_RBV' (every overlay's size). "
+            f"Up to {_MAX_MANY} matches.",
         },
     },
 }
