@@ -8,12 +8,24 @@ from argus.core.context import AppContext
 from argus.core.errors import ValidationError
 from argus.mcp_server.tools.registry import ToolDefinition
 
+_DEFAULT_POINTS = 300
+_MIN_POINTS = 10
+_MAX_POINTS = 2000
+
 _GET_HISTORY_SCHEMA = {
     "type": "object",
     "properties": {
         "pv_name": {"type": "string", "description": "The PV to retrieve historical trend data for."},
         "start": {"type": "string", "description": "ISO 8601 start time. Defaults to 1 hour ago."},
         "end": {"type": "string", "description": "ISO 8601 end time. Defaults to now."},
+        "max_points": {
+            "type": "integer",
+            "minimum": _MIN_POINTS,
+            "maximum": _MAX_POINTS,
+            "description": f"Most points to return (default {_DEFAULT_POINTS}). A range with more samples is "
+            "down-sampled by the archiver into time bins (mean, min, max, count), so any range - an hour or a "
+            "month - fits. Raise it only for a finer chart.",
+        },
     },
     "required": ["pv_name"],
 }
@@ -66,8 +78,87 @@ async def _get_history(arguments: dict[str, Any], ctx: AppContext) -> dict[str, 
     start = _parse_time(arguments.get("start"), now - timedelta(hours=1))
     end = _parse_time(arguments.get("end"), now)
 
-    series = await ctx.history_service.get_history(pv_name, start, end)
-    return {"history": dataclasses.asdict(series)}
+    max_points = arguments.get("max_points", _DEFAULT_POINTS)
+    if isinstance(max_points, bool) or not isinstance(max_points, int) or not _MIN_POINTS <= max_points <= _MAX_POINTS:
+        raise ValidationError(f"max_points must be an integer between {_MIN_POINTS} and {_MAX_POINTS}.")
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    if start >= end:
+        raise ValidationError("start must be before end.")
+
+    series = await ctx.history_service.get_history(pv_name, start, end, max_points=max_points)
+    return _history_payload(series, start, end)
+
+
+def _num(value: Any) -> Any:
+    """Round to 6 significant digits: archiver floats carry noise digits that only cost tokens."""
+    return float(f"{value:.6g}") if isinstance(value, float) else value
+
+
+def _iso(ts: datetime) -> str:
+    return ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _history_payload(series: Any, start: datetime, end: datetime) -> dict[str, Any]:
+    """Compact, chart-ready: one row per point, columns named once."""
+    samples = series.samples
+    payload: dict[str, Any] = {
+        "pv_name": series.pv_name,
+        "units": series.units,
+        "start": _iso(start),
+        "end": _iso(end),
+    }
+    if not samples:
+        payload.update(mode="empty", point_count=0, points=[],
+                       note="No archived samples in this range: the PV may not be archived, or did not change.")
+        return payload
+
+    if series.binned:
+        # A range answered raw has no bins; a binned reply may still hold a few raw points.
+        rows = [
+            [_iso(s.timestamp), _num(s.value),
+             _num(s.min if s.min is not None else s.value),
+             _num(s.max if s.max is not None else s.value),
+             s.count if s.count is not None else 1]
+            for s in samples
+        ]
+        payload.update(
+            mode="binned",
+            samples_in_range=sum(r[4] for r in rows),
+            point_count=len(rows),
+            columns=["time", "mean", "min", "max", "count"],
+            points=rows,
+            note="Each point is a time bin of the archived samples. For a chart, draw mean as the line and "
+            "min..max as a band, so spikes the mean hides stay visible. Times are UTC.",
+        )
+        lows = [r[2] for r in rows if isinstance(r[2], (int, float))]
+        highs = [r[3] for r in rows if isinstance(r[3], (int, float))]
+    else:
+        rows = [[_iso(s.timestamp), _num(s.value)] for s in samples]
+        payload.update(
+            mode="raw",
+            samples_in_range=len(rows),
+            point_count=len(rows),
+            columns=["time", "value"],
+            points=rows,
+            note="Every archived sample in the range (the archiver stores a sample only when the value "
+            "changes, so hold each value until the next point). Times are UTC.",
+        )
+        lows = highs = [r[1] for r in rows if isinstance(r[1], (int, float))]
+        alarms = [[_iso(s.timestamp), s.severity] for s in samples if s.severity]
+        if alarms:
+            payload["alarm_points"] = alarms[:50]
+
+    if lows and highs:
+        payload["summary"] = {
+            "min": min(lows),
+            "max": max(highs),
+            "first": rows[0][1],
+            "last": rows[-1][1],
+        }
+    return payload
 
 
 async def _get_alarm_history(arguments: dict[str, Any], ctx: AppContext) -> dict[str, Any]:
@@ -169,7 +260,13 @@ async def _create_logbook_entry(arguments: dict[str, Any], ctx: AppContext) -> d
 TOOLS = [
     ToolDefinition(
         name="get_history",
-        description="Get historical trend data for a PV over a time range (from the Archiver Appliance).",
+        description=(
+            "Historical trend of a PV over a time range, from the Archiver Appliance - for questions like 'what "
+            "did X do last night' and for charts. Returns compact rows (time, value) with a min/max/first/last "
+            "summary; a long range is down-sampled by the archiver into at most max_points time bins "
+            "(mean, min, max, count), so a month costs the same as an hour. To chart it, build the chart from "
+            "these points as they are - don't thin them further by hand."
+        ),
         input_schema=_GET_HISTORY_SCHEMA,
         handler=_get_history,
     ),

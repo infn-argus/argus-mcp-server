@@ -71,7 +71,7 @@ input schemas, enforced by
 | `device_status` | Quick health snapshot: live PVs + pod status |
 | `diagnose_device` | Full cross-system diagnostic report, one call |
 | `beamline_status` | Aggregate status across a group of devices |
-| `get_history` | Historical trend data for a PV (Archiver Appliance) |
+| `get_history` | Historical trend of a PV (Archiver Appliance), down-sampled by the archiver to at most `max_points` time bins (mean/min/max/count) - chart-ready for any range |
 | `get_alarm_history` | Recent alarm-tagged logbook entries for a device |
 | `create_logbook_entry` | Post a new entry to the operations logbook (as the signed-in user, when their token is forwarded) |
 | `get_logbook_entry` | Read one logbook entry straight from Olog, by id or hub code (`OLOG-SPARC-1234`) |

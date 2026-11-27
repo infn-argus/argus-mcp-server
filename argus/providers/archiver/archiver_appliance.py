@@ -8,7 +8,7 @@ wrapper — the same approach every EPICS site's own scripts use.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import ClassVar
 
 import httpx
@@ -22,6 +22,17 @@ from argus.providers.archiver.exceptions import (
 )
 from argus.providers.archiver.models import ArchiverSample, ArchiverSeries
 from argus.providers.base import ProviderHealth, ProviderStatus
+
+
+def _sample(point: dict, binned_query: bool) -> ArchiverSample:
+    timestamp = datetime.fromtimestamp(point["secs"] + point.get("nanos", 0) / 1e9, tz=timezone.utc)
+    value = point["val"]
+    # optimized_N bins: [mean, stddev, min, max, count]. Raw points in the same
+    # reply (a range with fewer samples than N) stay scalars.
+    if binned_query and isinstance(value, list) and len(value) == 5:
+        mean, _std, low, high, count = value
+        return ArchiverSample(timestamp=timestamp, value=mean, min=low, max=high, count=int(count))
+    return ArchiverSample(timestamp=timestamp, value=value, severity=point.get("severity"))
 
 
 class ArchiverApplianceProvider:
@@ -50,9 +61,26 @@ class ArchiverApplianceProvider:
             raise ArchiverUnconfiguredError("Archiver Appliance is not configured (set ARCHIVER_BASE_URL).")
 
     async def get_data(
-        self, pv_name: str, start: datetime, end: datetime, *, operator: str | None = None, timeout: float = 8.0
+        self,
+        pv_name: str,
+        start: datetime,
+        end: datetime,
+        *,
+        operator: str | None = None,
+        max_points: int | None = None,
+        timeout: float = 8.0,
     ) -> ArchiverSeries:
+        """Samples of ``pv_name`` between start and end.
+
+        ``max_points`` asks the appliance itself to down-sample with its
+        ``optimized_N`` operator: a range with more than N samples comes back
+        as about N time bins, each [mean, stddev, min, max, count]; a range
+        with fewer comes back raw. One request, and the reduction happens on
+        the appliance - a day of a 1 Hz PV is ~86k samples otherwise.
+        """
         self._require_configured()
+        if max_points is not None and operator is None:
+            operator = f"optimized_{int(max_points)}"
         pv_query = f"{operator}({pv_name})" if operator else pv_name
         params = {"pv": pv_query, "from": _iso(start), "to": _iso(end)}
         url = f"{self._settings.base_url}/retrieval/data/getData.json"
@@ -67,20 +95,16 @@ class ArchiverApplianceProvider:
         except httpx.HTTPError as exc:
             raise ArchiverUnavailableError(f"Archiver Appliance unreachable: {exc}") from exc
 
+        binned_query = bool(operator and operator.startswith("optimized_"))
         try:
             series = payload[0]
-            samples = [
-                ArchiverSample(
-                    timestamp=datetime.fromtimestamp(point["secs"] + point.get("nanos", 0) / 1e9),
-                    value=point["val"],
-                    severity=point.get("severity"),
-                )
-                for point in series.get("data", [])
-            ]
-        except (KeyError, IndexError, TypeError) as exc:
+            samples = [_sample(point, binned_query) for point in series.get("data", [])]
+            units = (series.get("meta") or {}).get("EGU") or None
+        except (KeyError, IndexError, TypeError, AttributeError) as exc:
             raise ArchiverQueryError(f"Unexpected Archiver Appliance response shape for '{pv_name}': {exc}") from exc
 
-        return ArchiverSeries(pv_name=pv_name, samples=samples)
+        binned = any(s.count is not None for s in samples)
+        return ArchiverSeries(pv_name=pv_name, samples=samples, units=units, binned=binned)
 
     async def get_latest(self, pv_name: str, *, timeout: float = 5.0) -> ArchiverSample | None:
         now = datetime.utcnow()
