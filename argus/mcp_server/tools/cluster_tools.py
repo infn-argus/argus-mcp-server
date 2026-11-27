@@ -221,7 +221,9 @@ TOOLS = [
             "(host/server/ip, devices' ip, camera ids), tests its TCP port, and for GigE cameras reads the control "
             "register (does the camera answer, does anything control it). Runs inside the IOC's own pod - the same "
             "network position as the IOC, required for devices on private networks only the IOC can reach - and "
-            "from ARGUS, then compares: device off, IOC network path broken, host up but service port closed. "
+            "from ARGUS, then compares: device off, IOC network path broken, host up but service port closed. A "
+            "port refused only because the IOC itself holds it (one-client serial servers) is reported as "
+            "in_use_by_ioc, which is healthy. The first info finding summarises all verdicts. "
             "Use it when an IOC restarts repeatedly, is disconnected, or its PVs are invalid. Read-only."
         ),
         input_schema=_CHECK_CONNECTIVITY_SCHEMA,

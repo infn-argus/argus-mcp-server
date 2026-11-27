@@ -184,7 +184,10 @@ async def test_private_device_reachable_only_from_ioc(argus_probe):
     report = (await _service(kube).check(ioc="ac2bpm01")).to_dict()
     assert report["vantages"] == {"argus": "ok", "ioc": "ok"}
     assert report["targets"][0]["verdict"] == "reachable_from_ioc_only"
-    assert report["findings"] == []
+    # All fine is said explicitly, so a model never has to infer it from an empty list.
+    [summary] = report["findings"]
+    assert summary["severity"] == "info"
+    assert summary["message"].startswith("All 1 devices checked are OK: 1 reachable from the IOC only")
     # The probe ran in the IOC's pod with an argv (no shell), interpreter first.
     assert kube.execs[0][0] == "python3" and kube.execs[0][1] == "-c"
 
@@ -212,6 +215,44 @@ async def test_port_closed_but_host_up(argus_probe):
     report = (await _service(kube).check(ioc="ocem-modbus")).to_dict()
     assert {t["verdict"] for t in report["targets"]} == {"host_up_port_closed"}
     assert "TCP port 502 is refused" in report["findings"][0]["message"]
+
+
+async def test_port_refused_but_held_by_the_ioc_is_healthy(argus_probe):
+    # One-client serial servers (Moxa) refuse a second connection while the IOC holds the port.
+    kube = FakeKube(
+        ioc_results=lambda ts: [
+            _res(t["host"], received=2, tcp={"port": t["port"], "state": "refused", "held_by_this_pod": True})
+            for t in ts
+        ]
+    )
+    report = (await _service(kube).check(ioc="ocem-modbus")).to_dict()
+    assert {t["verdict"] for t in report["targets"]} == {"in_use_by_ioc"}
+    [summary] = report["findings"]
+    assert summary["severity"] == "info" and "All 2 devices checked are OK" in summary["message"]
+    assert "held by the IOC" in summary["message"]
+
+
+async def test_held_by_ioc_counts_as_reachable_without_ping(argus_probe):
+    # ICMP filtered, but the IOC's live connection proves the device is there.
+    kube = FakeKube(
+        ioc_results=lambda ts: [
+            _res(t["host"], tcp={"port": t["port"], "state": "timeout", "held_by_this_pod": True}) for t in ts
+        ]
+    )
+    report = (await _service(kube).check(ioc="ocem-modbus")).to_dict()
+    assert {t["verdict"] for t in report["targets"]} == {"in_use_by_ioc"}
+
+
+async def test_summary_counts_problems(argus_probe):
+    kube = FakeKube(
+        ioc_results=lambda ts: [
+            _res(ts[0]["host"], received=2, tcp={"port": 502, "state": "open"}),
+            _res(ts[1]["host"]),
+        ]
+    )
+    report = (await _service(kube).check(ioc="ocem-modbus")).to_dict()
+    summary = [f for f in report["findings"] if f["severity"] == "info"][0]["message"]
+    assert summary == "2 devices checked, 1 OK and 1 with problems: 1 reachable from the IOC only (normal on a private device network), 1 unreachable."
 
 
 async def test_camera_not_controlled(argus_probe):
@@ -245,7 +286,7 @@ async def test_high_restarts_with_devices_up_says_so(argus_probe):
         ioc_results=lambda ts: [_res(t["host"], received=2) for t in ts],
     )
     report = (await _service(kube).check(ioc="ac2bpm01")).to_dict()
-    [finding] = report["findings"]
+    [finding] = [f for f in report["findings"] if f["severity"] != "info"]
     assert finding["severity"] == "warning" and "devices answer now" in finding["message"]
     assert "2026-11-25" in finding["message"]
 
@@ -307,6 +348,28 @@ def test_probe_tcp_refused_on_localhost():
     # Nothing listens on the port any more: connect is refused.
     out = connectivity_probe.probe([{"host": "127.0.0.1", "port": port}], count=1, timeout=0.5)
     assert out["results"][0]["tcp"]["state"] == "refused"
+
+
+def test_probe_sees_a_connection_this_process_holds():
+    import socket
+
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        with socket.create_connection(("127.0.0.1", port)):
+            conn, _ = server.accept()
+            with conn:
+                held = connectivity_probe._held_connection("127.0.0.1", port)
+    import sys
+
+    assert held is (sys.platform.startswith("linux"))  # /proc/net/tcp is Linux-only
+    assert connectivity_probe._held_connection("127.0.0.1", 1) is False
+
+
+def test_hex_endpoint_matches_kernel_format():
+    # 192.168.104.103:4001 as /proc/net/tcp prints it (seen in the haz-ser-ch1 pod).
+    assert "6768A8C0:0FA1" in connectivity_probe._hex_endpoint("192.168.104.103", 4001)
 
 
 def test_probe_source_runs_standalone(tmp_path):
