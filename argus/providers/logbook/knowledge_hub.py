@@ -138,6 +138,13 @@ class KnowledgeHubLogbookProvider:
             )
         return self._writer
 
+    # Writes go to Olog, so their checks are Olog's (logbook_writes: sign-in, logbook names).
+    def require_writer(self) -> None:
+        self._olog().require_writer()
+
+    async def resolve_logbooks(self, names: list[str], *, timeout: float = 5.0) -> list[str]:
+        return await self._olog().resolve_logbooks(names, timeout=timeout)
+
     async def get_entry(self, entry_id: str | int, *, timeout: float = 5.0) -> LogbookEntry:
         # Straight from Olog: the current text, before changing it. The hub's
         # copy lags behind by up to a day (its upload job runs daily).
