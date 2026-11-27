@@ -212,7 +212,7 @@ class ConnectivityService:
         if isinstance(iocs, dict):
             iocs = list(iocs.values())
         for raw in iocs:
-            if isinstance(raw, dict) and raw.get("name") == ioc_name:
+            if isinstance(raw, dict) and str(raw.get("name", "")).lower() == ioc_name.lower():
                 return _merge_ioc_defaults(data.get("iocDefaults") or {}, raw)
         raise ConnectivityError(f"IOC {ioc_name!r} is not in {self._inventory_path}.")
 
@@ -262,6 +262,14 @@ class ConnectivityService:
             if not re.search(r"not found|no such file|executable file", last, re.I) or "config-dump" in last:
                 break
         raise ConnectivityError(f"Could not read {pod}'s deployed config: {last[:200]}")
+
+    async def _canonical_ioc(self, ioc: str, namespace: str) -> str:
+        """The IOC's own name when given its pod's name (fi1-cam-vis-01-0 -> fi1-cam-vis-01)."""
+        try:
+            pod = await self._kubernetes.get_pod_for_ioc(ioc, namespace)
+        except ArgusError:
+            return ioc
+        return pod.ioc if pod is not None and getattr(pod, "ioc", None) else ioc
 
     async def _find_pod(self, ioc_name: str, namespace: str) -> str | None:
         pod = await self._kubernetes.get_pod_for_ioc(ioc_name, namespace)
@@ -314,6 +322,8 @@ class ConnectivityService:
         if vantage == "ioc" and not ioc:
             raise ValidationError("vantage 'ioc' needs the ioc whose pod to probe from.")
         ns = namespace or self._default_namespace
+        if ioc:
+            ioc = await self._canonical_ioc(ioc, ns)
         report = ConnectivityReport(subject=ioc or ", ".join(hosts or []))
 
         targets: list[Target] = []

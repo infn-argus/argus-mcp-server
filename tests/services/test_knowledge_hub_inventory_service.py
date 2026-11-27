@@ -128,3 +128,42 @@ async def test_a_workspace_never_imported_is_noted_and_git_arguments_are_said_to
     assert listing.devices == []
     assert "repo/path/ref were ignored" in listing.notes[0]
     assert "has not been imported" in listing.notes[1]
+
+
+class _YamlFallback:
+    def __init__(self, devices=None, error=None):
+        self.devices, self.error, self.calls = devices or [], error, []
+
+    async def list_inventory(self, repo, **filters):
+        from argus.services.beamline_inventory_service import InventoryListing
+
+        self.calls.append(filters)
+        if self.error:
+            raise self.error
+        return InventoryListing(source="yaml", devices=self.devices)
+
+
+@respx.mock
+async def test_empty_hub_group_falls_back_to_the_git_configuration():
+    # The hub has magnets but no camera records (EUAPS): cameras come from git.
+    respx.post(URL).mock(side_effect=FakeHub({"search_objects": _paging_hub([_device(1, "QUATM002")])}))
+    fallback = _YamlFallback(devices=["FI1-CAM-01"])
+    listing = await KnowledgeHubInventoryService(hub_client(), fallback=fallback).list_inventory(devgroup="cam")
+    assert listing.source == "yaml" and listing.devices == ["FI1-CAM-01"]
+    assert fallback.calls == [{"devgroup": "cam", "devfunc": None, "zone": None}]
+    assert "from the beamline's own configuration in git" in listing.notes[-1]
+
+
+@respx.mock
+async def test_hub_answer_is_kept_when_it_has_devices_or_the_fallback_fails():
+    from argus.core.errors import ArgusError
+
+    respx.post(URL).mock(side_effect=FakeHub({"search_objects": _paging_hub([_device(1, "QUATM002")])}))
+    fallback = _YamlFallback(devices=["X"])
+    listing = await KnowledgeHubInventoryService(hub_client(), fallback=fallback).list_inventory(devgroup="mag")
+    assert listing.source == "knowledge_hub" and fallback.calls == []
+
+    broken = _YamlFallback(error=ArgusError("no default repo"))
+    listing = await KnowledgeHubInventoryService(hub_client(), fallback=broken).list_inventory(devgroup="cam")
+    assert listing.source == "knowledge_hub" and listing.devices == []
+    assert "fallback failed: no default repo" in listing.notes[-1]

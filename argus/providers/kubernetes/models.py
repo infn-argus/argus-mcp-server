@@ -13,6 +13,9 @@ class PodStatus:
     restart_count: int
     node: str | None = None
     started_at: datetime | None = None
+    # The IOC this pod runs (its IOC label, e.g. app.kubernetes.io/instance):
+    # the name every IOC tool takes. `name` is the pod (a StatefulSet adds "-0").
+    ioc: str | None = None
 
 
 @dataclass

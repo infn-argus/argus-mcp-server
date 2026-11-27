@@ -7,6 +7,9 @@ slow or unavailable backend never blocks or breaks the whole response.
 
 from __future__ import annotations
 
+import dataclasses
+import re
+
 from collections.abc import Awaitable
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -25,6 +28,40 @@ from argus.services.models import Device, DeviceStatusReport, DiagnosticReport
 _DEVICE_STATUS_TIMEOUT = 3.0
 _DIAGNOSE_TIMEOUT = 10.0
 _DIAGNOSE_HISTORY_POINTS = 60
+_STATUS_PV_LIMIT = 30
+# Words that mark a PV worth showing in a status: state, health, the main
+# readbacks. GenICam feature PVs (GC_*) and plugin sub-PVs rank last.
+_STATUS_WORDS = re.compile(
+    r"(STATE|STATUS|Status|CURRENT|VOLTAGE|PRESSURE|TEMP|Temp|Rate|Acquire|Detector|Counter|ERR|Error|ALARM|"
+    r"POWER|Interlock|INTLK|POS|Position)",
+)
+
+
+def _status_view(device: Device) -> tuple[Device, int | None, str | None]:
+    """A device with few PVs is read whole; a large one (a camera: ~1000 PVs)
+    by its status PVs only, so the answer stays readable and fast."""
+    pvs = device.pv_names
+    if len(pvs) <= _STATUS_PV_LIMIT:
+        return device, None, None
+    prefix = device.name + ":"
+
+    def rank(pv: str) -> tuple[int, str]:
+        own = pv[len(prefix):] if pv.startswith(prefix) else pv
+        direct = ":" not in own and not own.startswith("GC_")
+        score = (0 if pv == device.primary_pv else 1) + (0 if direct else 4) + (0 if _STATUS_WORDS.search(own) else 2)
+        score += 0 if own.endswith(("_RB", "_RBV")) or "STATE" in own or "STATUS" in own else 1
+        return score, pv
+
+    # A setpoint whose readback exists says nothing more about the state: keep the readback.
+    present = set(pvs)
+    candidates = [pv for pv in pvs if f"{pv}_RBV" not in present and f"{pv}_RB" not in present]
+    chosen = sorted(sorted(candidates, key=rank)[:_STATUS_PV_LIMIT])
+    view = dataclasses.replace(device, pv_names=chosen)
+    note = (
+        f"{device.name} has {len(pvs)} PVs; {len(chosen)} status PVs were read. Read any other with get_pv "
+        f"({prefix}<name>), or list them with search_pvs."
+    )
+    return view, len(pvs), note
 
 
 class DiagnosticsService:
@@ -61,6 +98,7 @@ class DiagnosticsService:
     async def device_status(self, device_name: str, *, timeout: float = _DEVICE_STATUS_TIMEOUT) -> DeviceStatusReport:
         device = await self._device_service.resolve_device(device_name)
 
+        device, pvs_total, note = _status_view(device)
         tasks: dict[str, Awaitable[Any]] = {"live_pvs": self._epics.get_many(device.pv_names, timeout=timeout)}
         pre_skipped: dict[str, ProviderResult] = {}
 
@@ -77,6 +115,8 @@ class DiagnosticsService:
             pod=results["pod"],
             generated_at=datetime.now(timezone.utc),
             degraded_providers=[k for k, r in results.items() if r.status not in ("ok", "skipped")],
+            pvs_total=pvs_total,
+            note=note,
         )
 
     async def diagnose_device(
@@ -85,6 +125,7 @@ class DiagnosticsService:
         device = await self._device_service.resolve_device(device_name)
         now = datetime.now(timezone.utc)
 
+        device, pvs_total, note = _status_view(device)
         tasks: dict[str, Awaitable[Any]] = {"live_pvs": self._epics.get_many(device.pv_names, timeout=timeout)}
         pre_skipped: dict[str, ProviderResult] = {}
 
@@ -129,4 +170,6 @@ class DiagnosticsService:
             documentation=results["documentation"],
             generated_at=now,
             degraded_providers=[k for k, r in results.items() if r.status not in ("ok", "skipped")],
+            pvs_total=pvs_total,
+            note=note,
         )

@@ -164,7 +164,10 @@ class AppContext:
         )
         beamline_inventory_service: BeamlineInventoryService | KnowledgeHubInventoryService
         if settings.inventory_backend == "knowledge_hub":
-            beamline_inventory_service = KnowledgeHubInventoryService(knowledge_hub)
+            beamline_inventory_service = KnowledgeHubInventoryService(
+                knowledge_hub,
+                fallback=BeamlineInventoryService(knowledge=knowledge_service) if default_repos else None,
+            )
         else:
             beamline_inventory_service = BeamlineInventoryService(knowledge=knowledge_service)
         saverestore_service = SaveRestoreService(saverestore=saverestore, inventory=beamline_inventory_service)

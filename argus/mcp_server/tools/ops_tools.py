@@ -108,7 +108,13 @@ TOOLS = [
     ),
     ToolDefinition(
         name="list_iocs",
-        description="List running IOCs and their Kubernetes pod status.",
+        description=(
+            "List running IOCs and their Kubernetes pod status. Each entry's `ioc` is the IOC's name - the one "
+            "to pass to other tools (inspect_pod, check_connectivity, find_leftover_iocs); `name` is its pod "
+            "(an IOC run as a StatefulSet gets a '-0' suffix). An IOC name is not a device or PV name: an "
+            "IOC serves devices whose PVs are <prefix>:<device>:... - use list_beamline_devices or "
+            "search_pvs to find them."
+        ),
         input_schema=_NAMESPACE_SCHEMA,
         handler=_list_iocs,
     ),

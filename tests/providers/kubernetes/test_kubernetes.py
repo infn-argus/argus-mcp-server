@@ -236,3 +236,35 @@ async def test_list_pods_on_node_marks_extra_networks(monkeypatch):
     by_name = {p.name: p for p in pods}
     assert by_name["sbncamera-03-0"].extra_networks == ["sparc/sparc-br-cams"]
     assert by_name["gateway-0"].extra_networks == []
+
+
+async def test_list_iocs_reports_the_ioc_name_from_its_label(monkeypatch):
+    monkeypatch.setattr("kubernetes.config.load_incluster_config", lambda: None)
+    provider = KubernetesProvider(KubernetesSettings(
+        _env_file=None, K8S_IOC_LABEL_SELECTOR_TEMPLATE="app.kubernetes.io/instance={ioc_name}"))
+    pod = _fake_pod(name="fi1-cam-vis-01-0")
+    pod.metadata.labels = {"app.kubernetes.io/instance": "fi1-cam-vis-01"}
+    provider._api = SimpleNamespace(list_namespaced_pod=lambda ns, label_selector=None: SimpleNamespace(items=[pod]))
+    [status] = await provider.list_iocs(namespace="euaps")
+    assert (status.name, status.ioc) == ("fi1-cam-vis-01-0", "fi1-cam-vis-01")
+
+
+async def test_get_pod_for_ioc_also_takes_the_pod_name(monkeypatch):
+    monkeypatch.setattr("kubernetes.config.load_incluster_config", lambda: None)
+    provider = KubernetesProvider(KubernetesSettings(
+        _env_file=None, K8S_IOC_LABEL_SELECTOR_TEMPLATE="app.kubernetes.io/instance={ioc_name}"))
+    pod = _fake_pod(name="fi1-cam-vis-01-0")
+    pod.metadata.labels = {"app.kubernetes.io/instance": "fi1-cam-vis-01"}
+
+    def read_namespaced_pod(name, ns):
+        if name != "fi1-cam-vis-01-0":
+            raise RuntimeError("404")
+        return pod
+
+    provider._api = SimpleNamespace(
+        list_namespaced_pod=lambda ns, label_selector=None: SimpleNamespace(items=[]),  # no IOC by that name
+        read_namespaced_pod=read_namespaced_pod,
+    )
+    found = await provider.get_pod_for_ioc("fi1-cam-vis-01-0", "euaps")
+    assert found.ioc == "fi1-cam-vis-01"
+    assert await provider.get_pod_for_ioc("nothing-0", "euaps") is None

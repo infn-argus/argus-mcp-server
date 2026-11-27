@@ -36,6 +36,9 @@ class DeviceStatusReport:
     pod: ProviderResult
     generated_at: datetime
     degraded_providers: list[str] = field(default_factory=list)
+    # Large devices (a camera has ~1000 PVs): only the status PVs are read.
+    pvs_total: int | None = None
+    note: str | None = None
 
 
 @dataclass
@@ -50,3 +53,5 @@ class DiagnosticReport:
     documentation: ProviderResult
     generated_at: datetime
     degraded_providers: list[str] = field(default_factory=list)
+    pvs_total: int | None = None
+    note: str | None = None
