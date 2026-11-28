@@ -32,8 +32,15 @@ _INSPECT_NODE_SCHEMA = {
             "description": "Kubernetes node name, e.g. plk8sdadom003.lnf.infn.it (inspect_pod reports which node a pod is on).",
         },
         "window_minutes": _WINDOW,
+        "scope": {
+            "type": "string",
+            "enum": ["namespace", "cluster"],
+            "description": "Without node: 'namespace' (default) reports on this beamline's namespace, 'cluster' "
+            "on every namespace.",
+        },
+        "days": {"type": "integer", "minimum": 1, "maximum": 9,
+                 "description": "Without node: days the trends compare against (default 7)."},
     },
-    "required": ["node"],
 }
 
 
@@ -118,8 +125,13 @@ async def _inspect_node(arguments: dict[str, Any], ctx: AppContext) -> dict[str,
     if service is None:
         raise ValidationError("Cluster diagnostics are not available in this deployment.")
     node = arguments.get("node")
-    if not node or not isinstance(node, str):
-        raise ValidationError("node is required.")
+    if not node:
+        if ctx.infra_report is None:
+            raise ValidationError("The infrastructure report needs Prometheus, which is not configured here.")
+        return await ctx.infra_report.report(cluster=arguments.get("scope") == "cluster",
+                                             days=arguments.get("days") or 7)
+    if not isinstance(node, str):
+        raise ValidationError("node must be a node name.")
     report = await service.inspect_node(node, window_minutes=_window(arguments))
     return report.to_dict()
 
@@ -209,7 +221,13 @@ TOOLS = [
             "(e.g. control=sparc-br-cams), every pod on it (and which use extra networks such as camera VLANs), "
             "per-interface receive/send rates vs link speed, drops and errors (bond, VLAN, bridge), UDP "
             "receive-buffer overflows, kernel backlog drops, CPU (including the busiest core's softirq - packet "
-            "processing) and memory, over the last few minutes. Starts with 'findings'. Read-only."
+            "processing) and memory, over the last few minutes. Starts with 'findings'. "
+            "WITHOUT node: the infrastructure report - every node's CPU, memory and root disk, volumes (use, "
+            "growth, days until full), each namespace's CPU, memory and network, pod restarts, crash loops, OOM "
+            "kills, throttling, firing alerts and log error counts, each now against its trend over `days`, with "
+            "'issues' (worst first) for what looks wrong or is coming (a disk or volume filling up, memory "
+            "growing, errors rising). Use it for 'how is the infrastructure', 'any problems coming', trends of "
+            "storage/CPU/network/logs. Read-only."
         ),
         input_schema=_INSPECT_NODE_SCHEMA,
         handler=_inspect_node,

@@ -96,6 +96,24 @@ class LokiProvider:
         return entries[:limit]
 
 
+    async def metric(self, logql: str, *, timeout: float = 30.0) -> list[tuple[dict[str, str], float]]:
+        """An instant LogQL metric query (count_over_time...), as (labels, value) pairs."""
+        self._require_configured()
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.get(f"{self._settings.base_url}/loki/api/v1/query", params={"query": logql})
+                resp.raise_for_status()
+                payload = resp.json()
+        except httpx.TimeoutException as exc:
+            raise LokiTimeoutError(f"Timeout querying Loki: {exc}") from exc
+        except httpx.HTTPError as exc:
+            raise LokiUnavailableError(f"Loki unreachable: {exc}") from exc
+        try:
+            return [(r.get("metric", {}), float(r["value"][1])) for r in payload["data"]["result"]]
+        except (KeyError, TypeError, ValueError, IndexError) as exc:
+            raise LokiQueryError(f"Unexpected Loki response shape: {exc}") from exc
+
+
 def _build_query(*, namespace: str | None, pod: str | None, container: str | None, text: str | None) -> str:
     # json.dumps (not an f-string) quotes each label/text value LogQL-safely
     # (Loki's string literal syntax matches Go/JSON escaping closely enough).

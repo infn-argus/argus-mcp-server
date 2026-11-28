@@ -390,6 +390,22 @@ def render(facts: dict[str, Any]) -> tuple[str, str]:
     return title, "\n".join(lines).strip() + "\n"
 
 
+_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def report_wanted(config: dict, start: datetime) -> bool:
+    """Whether the description wants a report for the day starting at `start`: its schedule.days
+    lists weekdays (mon..sun, or full names); no list means every day."""
+    days = (config.get("schedule") or {}).get("days")
+    if not days:
+        return True
+    wanted = {str(d).strip().lower()[:3] for d in days}
+    unknown = wanted - set(_WEEKDAYS)
+    if unknown:
+        raise ValueError(f"schedule.days has unknown day(s): {sorted(unknown)}; use mon..sun.")
+    return _WEEKDAYS[start.weekday()] in wanted
+
+
 def day_window(day: str | None = None, *, tz: timezone = timezone.utc) -> tuple[datetime, datetime]:
     """The 24 hours of `day` (YYYY-MM-DD), or of yesterday."""
     if day:

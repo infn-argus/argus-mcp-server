@@ -158,3 +158,14 @@ def test_no_beam_is_said_plainly():
              "pvs_without_history": 0, "gaps": [], "groups": {}, "trips": {}, "logbook": [],
              "beam": {"pv": "X:CHARGE", "above": 10, "mean": 0.1, "max": 0.2, "bins_with_data": 288}}
     assert "No beam: `X:CHARGE` never reached 10" in render(facts)[1]
+
+
+def test_schedule_days():
+    from argus.services.daily_report import report_wanted
+    weekdays = {"schedule": {"days": ["Mon", "tue", "Wednesday", "thu", "FRI"]}}
+    friday, saturday = datetime(2026, 11, 27, tzinfo=timezone.utc), datetime(2026, 11, 28, tzinfo=timezone.utc)
+    assert report_wanted(weekdays, friday) and not report_wanted(weekdays, saturday)
+    assert report_wanted({}, saturday)                                     # no schedule: every day
+    import pytest
+    with pytest.raises(ValueError, match="unknown"):
+        report_wanted({"schedule": {"days": ["moon"]}}, friday)

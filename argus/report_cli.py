@@ -2,12 +2,13 @@
 
     python -m argus.report_cli coverage            # PVs the report needs: archived or not (read-only)
     python -m argus.report_cli coverage --archive  # also ask the appliance to archive what is missing
-    python -m argus.report_cli daily [--day YYYY-MM-DD] [--out DIR] [--post] [--logbook TEST]
+    python -m argus.report_cli daily [--day YYYY-MM-DD] [--out DIR] [--post] [--logbook TEST] [--force]
 
 `daily` computes the day's facts from the archiver (yesterday by default, UTC) and writes
 facts.json and report.md to --out. With --post it also posts the report to Olog as the
 robot account in ARGUS_REPORT_LOGBOOK_USERNAME / ARGUS_REPORT_LOGBOOK_PASSWORD (the Secret
-argus-olog-report), never as the server's own account or a chat user.
+argus-olog-report), never as the server's own account or a chat user. A day left out of
+the description's schedule.days (e.g. weekends on SPARC) is skipped unless --force.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from pathlib import Path
 
 from argus.core.context import AppContext
 from argus.providers.logbook.logbook import LogbookProvider
-from argus.services.daily_report import DailyReport, day_window, render
+from argus.services.daily_report import DailyReport, day_window, render, report_wanted
 from argus.services.report_service import resolve
 
 
@@ -51,6 +52,9 @@ async def _daily(ctx: AppContext, args: argparse.Namespace) -> dict:
     config, devices = await service.load(args.repo, args.ref)
     resolution = resolve(config, devices)
     start, end = day_window(args.day)
+    if not args.force and not report_wanted(config, start):
+        return {"skipped": start.strftime("%Y-%m-%d (%A)"),
+                "reason": f"not in schedule.days {config['schedule']['days']} of argus-report.yaml"}
     # Olog refuses anonymous searches: read the day's entries as the robot account when it is set.
     robot = _robot_logbook(ctx) if os.environ.get("ARGUS_REPORT_LOGBOOK_USERNAME") else None
     report = DailyReport(ctx.archiver, ctx.operations_service.pv_names_matching, logbook=robot or ctx.logbook)
@@ -80,6 +84,7 @@ def main() -> None:
     daily.add_argument("--out", default="/tmp/argus-report", help="directory for facts.json and report.md")
     daily.add_argument("--post", action="store_true", help="post the report to Olog as the robot account")
     daily.add_argument("--logbook", default=None, help="logbook to post to; default the config's logbooks.report")
+    daily.add_argument("--force", action="store_true", help="report even on a day schedule.days leaves out")
     for p in (cov, daily):
         p.add_argument("--repo", default=None)
         p.add_argument("--ref", default=None)
