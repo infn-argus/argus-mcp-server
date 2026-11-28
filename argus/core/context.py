@@ -44,6 +44,7 @@ from argus.services.knowledge_hub_inventory_service import KnowledgeHubInventory
 from argus.services.knowledge_service import KnowledgeService
 from argus.services.operations_service import OperationsService, ProcedureRegistry
 from argus.services.magnet_service import MagnetService
+from argus.services.report_service import ReportService
 from argus.services.saverestore_service import SaveRestoreService
 
 
@@ -94,6 +95,8 @@ class AppContext:
     connectivity_service: ConnectivityService | None = None
     # find_leftover_iocs / remove_leftover_ioc: IOC workloads nothing manages any more.
     leftover_service: LeftoverService | None = None
+    # The daily report's beamline description and its archive coverage (python -m argus.report_cli).
+    report_service: ReportService | None = None
 
     @classmethod
     def build(cls, settings: Settings | None = None) -> AppContext:
@@ -230,4 +233,5 @@ class AppContext:
             cluster_service=cluster_service,
             connectivity_service=connectivity_service,
             leftover_service=leftover_service,
+            report_service=ReportService(knowledge=knowledge_service, operations=operations_service, archiver=archiver),
         )
