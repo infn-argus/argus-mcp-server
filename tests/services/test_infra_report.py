@@ -22,10 +22,10 @@ class Loki:
     def is_configured(self):
         return True
 
-    async def metric(self, logql):
-        if "[24h]" in logql:
-            return [({"namespace": "sparc", "container": "ioc"}, 900.0)]
-        return [({"namespace": "sparc", "container": "ioc"}, 700.0)]          # 100 a day over 7 days
+    async def metric(self, logql, timeout=30.0):
+        if "offset 1d" in logql:
+            return [({"namespace": "sparc", "container": "ioc"}, 100.0)]      # the day before
+        return [({"namespace": "sparc", "container": "ioc"}, 900.0)]
 
 
 GIB = 2**30
@@ -58,7 +58,7 @@ async def test_trends_become_issues():
 async def test_cluster_scope_and_missing_metrics_do_not_fail():
     report = await InfraReportService(Prom({}), None, "sparc").report(cluster=True, days=30)
     assert report["scope"] == "cluster" and report["trend_days"] == 9 and report["issues"] == []
-    assert report["logs"] == {"unavailable": "Loki is not configured"}
+    assert "per namespace" in report["logs"]["skipped"]
 
 
 async def test_only_trouble_conditions_are_issues():
@@ -76,3 +76,17 @@ async def test_volumes_on_one_shared_filesystem_are_one_row():
     report = await InfraReportService(prom, None, "a").report(cluster=True)
     assert len(report["volumes"]) == 1 and report["volumes"][0]["shared_with"] == ["b/y"]
     assert [i["what"] for i in report["issues"]] == ["volume a/x (shared filesystem, 2 volumes)"]
+
+
+
+async def test_a_slow_loki_does_not_hang_the_report(monkeypatch):
+    import asyncio
+    import argus.services.infra_report as ir
+    monkeypatch.setattr(ir, "LOKI_DEADLINE", 0.05)
+
+    class SlowLoki(Loki):
+        async def metric(self, logql, timeout=30.0):
+            await asyncio.sleep(5)
+
+    report = await InfraReportService(Prom({}), SlowLoki(), "sparc").report()
+    assert "did not answer" in report["logs"]["unavailable"]

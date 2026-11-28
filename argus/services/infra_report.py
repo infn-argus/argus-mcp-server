@@ -14,6 +14,11 @@ import json
 from typing import Any
 
 MAX_ROWS = 15
+# Deadlines: a chat is waiting. Loki scans every log line in range, and one busy IOC logs
+# over a million error lines a day, so the log trend compares the last 24 h with the 24 h
+# before (two days scanned, not a week) and gives up after LOKI_DEADLINE.
+PROM_DEADLINE = 20.0
+LOKI_DEADLINE = 25.0
 SEVERITY = {"critical": 0, "warning": 1, "info": 2}
 
 
@@ -37,8 +42,8 @@ class InfraReportService:
 
     async def _q(self, promql: str) -> list[tuple[dict, float]]:
         try:
-            return await self._prom.query(promql)
-        except Exception:  # noqa: BLE001 - one missing metric must not sink the report
+            return await asyncio.wait_for(self._prom.query(promql), PROM_DEADLINE)
+        except Exception:  # noqa: BLE001 - one missing or slow metric must not sink the report
             return []
 
     async def report(self, *, namespaces: list[str] | None = None, cluster: bool = False,
@@ -201,11 +206,13 @@ class InfraReportService:
             if a["severity"] in ("critical", "warning"):
                 issue(a["severity"], f"alert {a['alert']}", f"firing ({a.get('namespace') or 'cluster'})")
 
-        logs = await self._log_errors(ns, days)
+        # Counting error lines across every namespace takes Loki over 2 minutes here; one namespace takes seconds.
+        logs = {"skipped": "log error counts are per namespace (cluster-wide counting takes Loki minutes): "
+                           "ask about one namespace"} if cluster else await self._log_errors(ns, days)
         for r in logs.get("containers", []):
-            if r["errors_24h"] >= 100 and r["errors_24h"] > 3 * max(r["daily_average"], 1):
+            if r["errors_24h"] >= 100 and r["errors_24h"] > 3 * max(r["errors_previous_24h"], 1):
                 issue("warning", f"logs {r['namespace']}/{r['container']}",
-                      f"{r['errors_24h']} error lines in 24 h, {r['daily_average']} a day on average")
+                      f"{r['errors_24h']} error lines in 24 h, {r['errors_previous_24h']} the day before")
 
         issues.sort(key=lambda i: SEVERITY.get(i["severity"], 3))
         return {
@@ -213,24 +220,29 @@ class InfraReportService:
             "issues": issues,
             "nodes": nodes, "volumes": volumes[:MAX_ROWS * 2], "namespaces": spaces[:MAX_ROWS],
             "pods": {k: v[:MAX_ROWS] for k, v in pods.items()}, "alerts": alerts[:MAX_ROWS * 2], "logs": logs,
-            "notes": "Trends compare now with the average over trend_days; days_to_full extrapolates the last "
-                     "3 days. Summarise the issues first, worst first, then what the trends show.",
+            "notes": "Trends compare now with the average over trend_days (log errors: the last 24 h with the "
+                     "24 h before); days_to_full extrapolates the last 3 days. Summarise the issues first, "
+                     "worst first, then what the trends show.",
         }
 
-    async def _log_errors(self, ns: str, days: int) -> dict[str, Any]:
+    async def _log_errors(self, ns: str, days: int) -> dict[str, Any]:  # noqa: ARG002 - days: see LOKI_DEADLINE
         if self._loki is None or not self._loki.is_configured():
             return {"unavailable": "Loki is not configured"}
         pattern = '|~ "(?i)(error|exception|fatal|panic)"'
         sel = f"{{namespace=~{json.dumps(ns)}}}"
+        count = f"sum by (namespace, container) (count_over_time({sel} {pattern} [24h]"
         try:
-            now, past = await asyncio.gather(
-                self._loki.metric(f"sum by (namespace, container) (count_over_time({sel} {pattern} [24h]))"),
-                self._loki.metric(f"sum by (namespace, container) (count_over_time({sel} {pattern} [{days}d]))"))
+            now, past = await asyncio.wait_for(asyncio.gather(
+                self._loki.metric(count + "))", timeout=LOKI_DEADLINE),
+                self._loki.metric(count + " offset 1d))", timeout=LOKI_DEADLINE)), LOKI_DEADLINE)
+        except asyncio.TimeoutError:
+            return {"unavailable": f"Loki did not answer within {LOKI_DEADLINE:.0f} s (too many log lines in "
+                                   "range); ask for one namespace instead of the cluster"}
         except Exception as exc:  # noqa: BLE001
             return {"unavailable": str(exc)[:200]}
         base = _by(past, "namespace", "container")
         rows = [{"namespace": l.get("namespace"), "container": l.get("container"), "errors_24h": round(v),
-                 "daily_average": round(base.get((l.get("namespace", ""), l.get("container", "")), 0) / days)}
+                 "errors_previous_24h": round(base.get((l.get("namespace", ""), l.get("container", "")), 0))}
                 for l, v in now]
         rows.sort(key=lambda r: -r["errors_24h"])
         return {"containers": rows[:MAX_ROWS]}
