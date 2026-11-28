@@ -136,6 +136,11 @@ class PrometheusProvider:
         except (KeyError, TypeError, ValueError, IndexError) as exc:
             raise PrometheusQueryError(f"Unexpected Prometheus response shape: {exc}") from exc
 
+    async def query(self, promql: str) -> list[tuple[dict[str, str], float]]:
+        """An instant PromQL query, as (labels, value) pairs."""
+        self._require_configured()
+        return await self._vector(promql)
+
     async def _scalar(self, promql: str) -> float | None:
         rows = await self._vector(promql)
         return rows[0][1] if rows else None
